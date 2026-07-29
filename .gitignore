@@ -1,7 +1,8 @@
 # OSX
 #
 .DS_Store
-
+# VS Code
+.vscode/
 # Xcode
 #
 build/
@@ -73,3 +74,4 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+android/app/build/
