@@ -1,18 +1,37 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, TextInput, ScrollView, Switch, Alert, Modal, FlatList, ActivityIndicator } from 'react-native';
 import { useSensorStore } from './src/store/SensorStore';
-import { startBackgroundOrchestrator, sendHydrationCommand } from './src/services/BackgroundOrchestrator';
+import { useLocationStore } from './src/store/LocationStore';
+import { startBackgroundOrchestrator, startRecordingSession, stopRecordingSession, setGpsTrackingLive, sendHydrationCommand } from './src/services/BackgroundOrchestrator';
 import { NODES } from './src/config/NodeRegistry';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
+import { Sparkline } from './src/components/Sparkline';
+import { SessionManagerScreen } from './src/screens/SessionManagerScreen';
+import { MapScreen } from './src/screens/MapScreen';
 
 const scannerManager = new BleManager();
+const NODE_LIST = Object.values(NODES) as Array<{ id: string; name: string }>;
+const NODES_BY_ID = NODES as Record<string, { id: string; name: string }>;
+
+const isValidNumber = (s: string) => {
+  const trimmed = s.trim();
+  if (trimmed.length === 0) return false;
+  const n = Number(trimmed);
+  return !isNaN(n) && isFinite(n);
+};
+
+const STATUS_META: Record<string, { color: string; label: string }> = {
+  connected: { color: '#4CAF50', label: '🟢 Connected' },
+  connecting: { color: '#F59E0B', label: '🟡 Connecting…' },
+  reconnecting: { color: '#F59E0B', label: '🟠 Reconnecting…' },
+};
 
 export default function App() {
   const {
-    activeInterests, connectedNodes, isRecording, isSyncing, fileName, nodeBindings,
+    activeInterests, nodeStatus, isRecording, isSyncing, fileName, nodeBindings,
     gait, posture, hydration, environment,
-    addInterest, removeInterest, setRecording, setFileName, bindNode, loadBindings
+    addInterest, removeInterest, setFileName, bindNode, loadBindings
   } = useSensorStore();
 
   // Scanner Modal States
@@ -20,10 +39,20 @@ export default function App() {
   const [scanningNode, setScanningNode] = useState<string | null>(null);
   const [discoveredDevices, setDiscoveredDevices] = useState<Device[]>([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // OTA Calibration Input States
   const [calibWeightInput, setCalibWeightInput] = useState('');
   const [calibCapacitanceInput, setCalibCapacitanceInput] = useState('');
+  const [isSendingCommand, setIsSendingCommand] = useState(false);
+
+  // Session Manager
+  const [isSessionManagerVisible, setSessionManagerVisible] = useState(false);
+
+  // GPS / Map
+  const { gpsTrackingEnabled, locationError } = useLocationStore();
+  const [isMapVisible, setMapVisible] = useState(false);
 
   useEffect(() => {
     const bootSequence = async () => {
@@ -34,10 +63,20 @@ export default function App() {
             PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
             PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
             PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS, 
+            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
           ]);
-          if (granted['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED) {
+          const scanGranted = granted['android.permission.BLUETOOTH_SCAN'] === PermissionsAndroid.RESULTS.GRANTED;
+          const connectGranted = granted['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED;
+          const locationGranted = granted['android.permission.ACCESS_FINE_LOCATION'] === PermissionsAndroid.RESULTS.GRANTED;
+
+          if (scanGranted && connectGranted) {
             await startBackgroundOrchestrator();
+          }
+          if (!scanGranted || !connectGranted || !locationGranted) {
+            Alert.alert(
+              'Limited Functionality',
+              'Bluetooth scanning/connection may not work without Scan, Connect, and Location permissions. You can grant these in system settings.'
+            );
           }
         } catch (e) {
           console.error("Boot failed:", e);
@@ -45,6 +84,10 @@ export default function App() {
       }
     };
     bootSequence();
+
+    return () => {
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    };
   }, []);
 
   const handleNodeToggle = (nodeId: string, isEnabled: boolean) => {
@@ -58,10 +101,16 @@ export default function App() {
   const openScanner = (nodeId: string) => {
     setScanningNode(nodeId);
     setDiscoveredDevices([]);
+    setScanError(null);
     setModalVisible(true);
     setIsScanning(true);
 
     scannerManager.startDeviceScan(null, null, (error, device) => {
+      if (error) {
+        setScanError(error.message || 'Bluetooth scan failed.');
+        setIsScanning(false);
+        return;
+      }
       if (device && device.name) {
         setDiscoveredDevices(prev => {
           if (!prev.find(d => d.id === device.id)) return [...prev, device];
@@ -71,13 +120,19 @@ export default function App() {
     });
 
     // Auto-stop scan after 10 seconds to save battery
-    setTimeout(() => {
+    if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    scanTimeoutRef.current = setTimeout(() => {
       scannerManager.stopDeviceScan();
       setIsScanning(false);
+      scanTimeoutRef.current = null;
     }, 10000);
   };
 
   const stopScan = () => {
+    if (scanTimeoutRef.current) {
+      clearTimeout(scanTimeoutRef.current);
+      scanTimeoutRef.current = null;
+    }
     scannerManager.stopDeviceScan();
     setIsScanning(false);
   };
@@ -90,15 +145,64 @@ export default function App() {
     }
   };
 
+  const beginRecording = async () => {
+    const { gpsError, renamedTo } = await startRecordingSession();
+    if (renamedTo) {
+      Alert.alert(
+        "New Session File Started",
+        `"${fileName}" already existed with an older column layout, so recording continues in a new file: ${renamedTo}.csv — your old file was left untouched.`
+      );
+    }
+    if (gpsError) {
+      Alert.alert("GPS Tracking Unavailable", `Recording started, but GPS tracking could not start: ${gpsError}`);
+    }
+  };
+
   const toggleRecordingSession = () => {
     if (!isRecording) {
       if (activeInterests.length === 0) return Alert.alert("Warning", "Activate a node first.");
-      setRecording(true);
+
+      const notLive = activeInterests.filter(id => nodeStatus[id] !== 'connected');
+      if (notLive.length > 0) {
+        const names = notLive.map(id => NODES_BY_ID[id]?.name ?? id).join(', ');
+        Alert.alert(
+          "Node(s) Not Connected",
+          `${names} ${notLive.length > 1 ? 'are' : 'is'} active but not currently connected. Recording will log stale/zero values until it reconnects. Start anyway?`,
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Start Anyway", onPress: () => { beginRecording(); } },
+          ]
+        );
+        return;
+      }
+      beginRecording();
     } else {
-      setRecording(false);
-      Alert.alert("Session Saved", `Data successfully written to Downloads/${fileName}.csv`);
+      stopRecordingSession();
+      Alert.alert("Session Saved", `Data successfully written to Downloads/GaitTwin/${fileName}.csv`);
     }
   };
+
+  const handleGpsToggle = async (enabled: boolean) => {
+    const { gpsError } = await setGpsTrackingLive(enabled);
+    if (gpsError) {
+      Alert.alert("GPS Tracking Unavailable", gpsError);
+    }
+  };
+
+  const runCalibrationCommand = async (command: string, successMessage: string) => {
+    setIsSendingCommand(true);
+    try {
+      const ok = await sendHydrationCommand(command);
+      Alert.alert(ok ? "Command Sent" : "Command Failed", ok ? successMessage : "Could not reach the hydration node. Check connection.");
+      return ok;
+    } finally {
+      setIsSendingCommand(false);
+    }
+  };
+
+  const droppedWhileRecording = isRecording
+    ? activeInterests.filter(id => nodeStatus[id] !== 'connected')
+    : [];
 
   return (
     <SafeAreaView style={styles.container}>
@@ -108,7 +212,6 @@ export default function App() {
         <Text style={styles.subtitle}>Digital Health Twin Multi-Node Framework</Text>
       </View>
 
-      {/* --- THE MISSING SYNC BANNER --- */}
       {isSyncing && (
         <View style={styles.syncBanner}>
           <ActivityIndicator size="small" color="#FFF" />
@@ -116,24 +219,34 @@ export default function App() {
         </View>
       )}
 
+      {droppedWhileRecording.length > 0 && (
+        <View style={styles.warnBanner}>
+          <Text style={styles.warnText}>
+            ⚠ {droppedWhileRecording.map(id => NODES_BY_ID[id]?.name ?? id).join(', ')} disconnected — still recording (values may be stale)
+          </Text>
+        </View>
+      )}
+
       <ScrollView style={styles.scrollArea}>
         {/* CONNECTION POOL & BINDER */}
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Node Assignments</Text>
-          {Object.values(NODES).map((node) => {
+          {NODE_LIST.map((node) => {
             const isTargeted = activeInterests.includes(node.id);
-            const isLive = connectedNodes.includes(node.id);
+            const status = nodeStatus[node.id] ?? 'disconnected';
             const macAddress = nodeBindings[node.id];
+            const meta = STATUS_META[status] ?? {
+              color: macAddress ? '#2196F3' : '#F44336',
+              label: macAddress ? `🔗 Bound: ${macAddress}` : '🔴 Unassigned',
+            };
 
             return (
               <View key={node.id} style={styles.nodeRow}>
                 <View style={{flex: 1}}>
                   <Text style={styles.nodeName}>{node.name}</Text>
-                  <Text style={[styles.nodeStatus, { color: isLive ? '#4CAF50' : macAddress ? '#2196F3' : '#F44336' }]}>
-                    {isLive ? '🟢 Connected' : macAddress ? `🔗 Bound: ${macAddress}` : '🔴 Unassigned'}
-                  </Text>
+                  <Text style={[styles.nodeStatus, { color: meta.color }]}>{meta.label}</Text>
                 </View>
-                
+
                 <TouchableOpacity style={styles.bindButton} onPress={() => openScanner(node.id)}>
                   <Text style={styles.bindButtonText}>{macAddress ? 'Rebind' : 'Bind'}</Text>
                 </TouchableOpacity>
@@ -146,18 +259,42 @@ export default function App() {
 
         {/* DATA CARDS */}
         <Text style={styles.sectionHeader}>Live Core Metrics</Text>
-        
+
         <View style={styles.dataCard}>
           <Text style={styles.cardHeader}>Gait Analysis Node</Text>
           <View style={styles.grid}>
-            <View style={styles.gridItem}><Text style={styles.label}>Pitch</Text><Text style={styles.val}>{gait.pitch.toFixed(1)}°</Text></View>
-            <View style={styles.gridItem}><Text style={styles.label}>Roll</Text><Text style={styles.val}>{gait.roll.toFixed(1)}°</Text></View>
-            <View style={styles.gridItem}><Text style={styles.label}>Yaw</Text><Text style={styles.val}>{gait.yaw.toFixed(1)}°</Text></View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Pitch</Text>
+              <Text style={styles.val}>{gait.pitch.toFixed(1)}°</Text>
+              <Sparkline metricKey="gait.pitch" color="#2b6cb0" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Roll</Text>
+              <Text style={styles.val}>{gait.roll.toFixed(1)}°</Text>
+              <Sparkline metricKey="gait.roll" color="#2b6cb0" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Yaw</Text>
+              <Text style={styles.val}>{gait.yaw.toFixed(1)}°</Text>
+              <Sparkline metricKey="gait.yaw" color="#2b6cb0" />
+            </View>
           </View>
           <View style={styles.grid}>
-            <View style={styles.gridItem}><Text style={styles.label}>Heel FSR</Text><Text style={styles.val}>{gait.heel}</Text></View>
-            <View style={styles.gridItem}><Text style={styles.label}>Met1 FSR</Text><Text style={styles.val}>{gait.mid}</Text></View>
-            <View style={styles.gridItem}><Text style={styles.label}>Met5 FSR</Text><Text style={styles.val}>{gait.toe}</Text></View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Heel FSR</Text>
+              <Text style={styles.val}>{gait.heel}</Text>
+              <Sparkline metricKey="gait.heel" color="#805ad5" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Met1 FSR</Text>
+              <Text style={styles.val}>{gait.mid}</Text>
+              <Sparkline metricKey="gait.mid" color="#805ad5" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Met5 FSR</Text>
+              <Text style={styles.val}>{gait.toe}</Text>
+              <Sparkline metricKey="gait.toe" color="#805ad5" />
+            </View>
           </View>
         </View>
 
@@ -168,75 +305,86 @@ export default function App() {
           </View>
         </View>
 
-  {/* HYDRATION DATA CARD (UPDATED METRICS) */}
+        {/* HYDRATION DATA CARD (UPDATED METRICS) */}
         <View style={[styles.dataCard, isSyncing && { borderColor: '#3B82F6', borderWidth: 2 }]}>
           <Text style={styles.cardHeader}>Biometric Hydration Node (Fused System)</Text>
           <View style={styles.grid}>
             <View style={styles.gridItem}>
               <Text style={styles.label}>Final Fused Vol</Text>
               <Text style={[styles.val, { fontSize: 24, color: '#2563EB' }]}>{hydration.fusedVolumeML.toFixed(1)} mL</Text>
+              <Sparkline metricKey="hydration.fusedVolumeML" color="#2563EB" />
             </View>
           </View>
           <View style={[styles.grid, { marginTop: 10, borderTopWidth: 1, borderColor: '#edf2f7', paddingTop: 10 }]}>
             <View style={styles.gridItem}>
               <Text style={styles.label}>Load Cell Wt.</Text>
               <Text style={[styles.val, { fontSize: 16, color: '#805ad5' }]}>{hydration.weightGrams.toFixed(1)} g</Text>
+              <Sparkline metricKey="hydration.weightGrams" color="#805ad5" />
             </View>
             <View style={styles.gridItem}>
               <Text style={styles.label}>FDC Capacitance</Text>
               <Text style={[styles.val, { fontSize: 16, color: '#d69e2e' }]}>{hydration.capVolumeML.toFixed(1)} mL</Text>
+              <Sparkline metricKey="hydration.capVolumeML" color="#d69e2e" />
             </View>
           </View>
         </View>
 
         {/* OTA HYDRATION CALIBRATION PANEL */}
-        {connectedNodes.includes('HYDRATION') && (
+        {nodeStatus.HYDRATION === 'connected' && (
           <View style={[styles.dataCard, { backgroundColor: '#F1F5F9' }]}>
             <Text style={styles.cardHeader}>OTA Hydration Calibration</Text>
-            
-            <TouchableOpacity 
-              style={[styles.recordButton, { backgroundColor: '#0EA5E9', marginBottom: 15 }]} 
-              onPress={() => {
-                sendHydrationCommand("TARE");
-                Alert.alert("Command Sent", "Tare system initiated.");
-              }}
+
+            <TouchableOpacity
+              style={[styles.recordButton, { backgroundColor: '#0EA5E9', marginBottom: 15, opacity: isSendingCommand ? 0.6 : 1 }]}
+              disabled={isSendingCommand}
+              onPress={() => runCalibrationCommand("TARE", "Tare system initiated.")}
             >
               <Text style={styles.buttonText}>🔄 TARE SYSTEM</Text>
             </TouchableOpacity>
 
             <View style={styles.inputRow}>
-              <TextInput 
-                style={styles.otaInput} 
-                keyboardType="numeric" 
-                placeholder="Load Cell (g)" 
-                value={calibWeightInput} 
-                onChangeText={setCalibWeightInput} 
+              <TextInput
+                style={styles.otaInput}
+                keyboardType="numeric"
+                placeholder="Load Cell (g)"
+                value={calibWeightInput}
+                onChangeText={setCalibWeightInput}
               />
-              <TouchableOpacity 
-                style={styles.otaSendBtn} 
-                onPress={() => { 
-                  sendHydrationCommand(`CAL_W:${calibWeightInput}`); 
-                  setCalibWeightInput(''); 
-                  Alert.alert("Command Sent", `Calibrating weight to ${calibWeightInput}g`);
+              <TouchableOpacity
+                style={[styles.otaSendBtn, { opacity: isSendingCommand || !isValidNumber(calibWeightInput) ? 0.6 : 1 }]}
+                disabled={isSendingCommand || !isValidNumber(calibWeightInput)}
+                onPress={async () => {
+                  if (!isValidNumber(calibWeightInput)) {
+                    Alert.alert("Invalid Input", "Enter a valid numeric weight in grams.");
+                    return;
+                  }
+                  const value = calibWeightInput.trim();
+                  const ok = await runCalibrationCommand(`CAL_W:${value}`, `Calibrating weight to ${value}g`);
+                  if (ok) setCalibWeightInput('');
                 }}>
                 <Text style={styles.buttonText}>CAL W</Text>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.inputRow}>
-              <TextInput 
-                style={styles.otaInput} 
-                keyboardType="numeric" 
-                placeholder="Capacitance (mL)" 
-                value={calibCapacitanceInput} 
-                onChangeText={setCalibCapacitanceInput} 
+              <TextInput
+                style={styles.otaInput}
+                keyboardType="numeric"
+                placeholder="Capacitance (mL)"
+                value={calibCapacitanceInput}
+                onChangeText={setCalibCapacitanceInput}
               />
-              <TouchableOpacity 
-                style={styles.otaSendBtn} 
-                onPress={() => { 
-                  sendHydrationCommand(`CAL_C:${calibCapacitanceInput}`); 
-                  setCalibCapacitanceInput(''); 
-                  Alert.alert("Command Sent", `Calibrating capacitance to ${calibCapacitanceInput}mL`);
+              <TouchableOpacity
+                style={[styles.otaSendBtn, { opacity: isSendingCommand || !isValidNumber(calibCapacitanceInput) ? 0.6 : 1 }]}
+                disabled={isSendingCommand || !isValidNumber(calibCapacitanceInput)}
+                onPress={async () => {
+                  if (!isValidNumber(calibCapacitanceInput)) {
+                    Alert.alert("Invalid Input", "Enter a valid numeric capacitance volume in mL.");
+                    return;
+                  }
+                  const value = calibCapacitanceInput.trim();
+                  const ok = await runCalibrationCommand(`CAL_C:${value}`, `Calibrating capacitance to ${value}mL`);
+                  if (ok) setCalibCapacitanceInput('');
                 }}>
                 <Text style={styles.buttonText}>CAL C</Text>
               </TouchableOpacity>
@@ -252,12 +400,30 @@ export default function App() {
           </View>
         </View>
 
+        {/* GPS TRACKING & MAP */}
+        <View style={styles.sectionCard}>
+          <View style={styles.gpsToggleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sectionTitle}>GPS Tracking</Text>
+              <Text style={styles.gpsHint}>Records your route, speed, and local weather during a session</Text>
+            </View>
+            <Switch value={gpsTrackingEnabled} onValueChange={handleGpsToggle} />
+          </View>
+          {locationError && <Text style={styles.gpsError}>⚠ {locationError}</Text>}
+          <TouchableOpacity style={styles.sessionManagerButton} onPress={() => setMapVisible(true)}>
+            <Text style={styles.sessionManagerButtonText}>🗺️ View Map</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* BACKGROUND RECORDER */}
         <View style={styles.recordSection}>
           <Text style={styles.sectionTitleWhite}>Synchronous Flight Logger</Text>
           <TextInput style={styles.input} value={fileName} onChangeText={setFileName} placeholder="Enter custom CSV name" editable={!isRecording} />
           <TouchableOpacity style={[styles.recordButton, { backgroundColor: isRecording ? '#F44336' : '#4CAF50' }]} onPress={toggleRecordingSession}>
             <Text style={styles.buttonText}>{isRecording ? '🛑 STOP & FLUSH CSV' : '⏺️ START RECORDING'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sessionManagerButton} onPress={() => setSessionManagerVisible(true)}>
+            <Text style={styles.sessionManagerButtonText}>📁 Manage Recorded Sessions</Text>
           </TouchableOpacity>
         </View>
 
@@ -274,8 +440,10 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Hardware Device</Text>
-            <Text style={{textAlign: 'center', marginBottom: 15}}>{isScanning ? 'Radar Active...' : 'Scan Complete'}</Text>
-            
+            <Text style={{textAlign: 'center', marginBottom: 15}}>
+              {scanError ? `⚠ ${scanError}` : isScanning ? 'Radar Active...' : 'Scan Complete'}
+            </Text>
+
             <FlatList
               data={discoveredDevices}
               keyExtractor={(item) => item.id}
@@ -286,13 +454,16 @@ export default function App() {
                 </TouchableOpacity>
               )}
             />
-            
+
             <TouchableOpacity style={styles.closeButton} onPress={() => { stopScan(); setModalVisible(false); }}>
               <Text style={{color: 'white', fontWeight: 'bold'}}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      <SessionManagerScreen visible={isSessionManagerVisible} onClose={() => setSessionManagerVisible(false)} />
+      <MapScreen visible={isMapVisible} onClose={() => setMapVisible(false)} />
     </SafeAreaView>
   );
 }
@@ -306,6 +477,8 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 13, color: '#718096', marginTop: 4 },
   syncBanner: { backgroundColor: '#3B82F6', padding: 10, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', borderRadius: 8, marginHorizontal: 5, marginBottom: 15 },
   syncText: { color: '#FFF', fontWeight: 'bold', marginLeft: 8 },
+  warnBanner: { backgroundColor: '#F59E0B', padding: 10, borderRadius: 8, marginHorizontal: 5, marginBottom: 15 },
+  warnText: { color: '#FFF', fontWeight: 'bold', textAlign: 'center' },
   scrollArea: { flex: 1 },
   sectionCard: { backgroundColor: '#fff', padding: 15, borderRadius: 12, marginBottom: 20, elevation: 2 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2d3748', marginBottom: 10 },
@@ -326,6 +499,11 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#fff', padding: 12, borderRadius: 8, marginBottom: 12, fontSize: 14, color: '#2d3748' },
   recordButton: { padding: 14, borderRadius: 8, alignItems: 'center' },
   buttonText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  sessionManagerButton: { padding: 12, borderRadius: 8, alignItems: 'center', marginTop: 10, backgroundColor: '#2d3748' },
+  sessionManagerButtonText: { color: '#fff', fontSize: 13, fontWeight: 'bold' },
+  gpsToggleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  gpsHint: { fontSize: 11, color: '#a0aec0', marginTop: 2 },
+  gpsError: { fontSize: 12, color: '#d69e2e', marginBottom: 10, fontWeight: '600' },
   inputRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   otaInput: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingHorizontal: 15, height: 45, marginRight: 10, fontSize: 15 },
   otaSendBtn: { backgroundColor: '#10B981', paddingHorizontal: 20, justifyContent: 'center', alignItems: 'center', borderRadius: 8 },

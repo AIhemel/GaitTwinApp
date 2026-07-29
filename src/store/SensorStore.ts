@@ -1,14 +1,16 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+export type NodeConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
 interface SensorState {
   activeInterests: string[];
-  connectedNodes: string[];
+  nodeStatus: Record<string, NodeConnectionStatus>;
   isRecording: boolean;
   isSyncing: boolean;
   fileName: string;
   nodeBindings: Record<string, string | null>;
-  
+
   gait: { pitch: number; roll: number; yaw: number; heel: number; mid: number; toe: number };
   posture: { spineAngle: number };
   // --- UPDATED HYDRATION METRICS ---
@@ -17,8 +19,7 @@ interface SensorState {
 
   addInterest: (nodeId: string) => void;
   removeInterest: (nodeId: string) => void;
-  addConnectedNode: (nodeId: string) => void;
-  removeConnectedNode: (nodeId: string) => void;
+  setNodeStatus: (nodeId: string, status: NodeConnectionStatus) => void;
   setRecording: (status: boolean) => void;
   setIsSyncing: (status: boolean) => void;
   setFileName: (name: string) => void;
@@ -34,7 +35,7 @@ interface SensorState {
 
 export const useSensorStore = create<SensorState>((set, get) => ({
   activeInterests: [],
-  connectedNodes: [],
+  nodeStatus: { GAIT: 'disconnected', POSTURE: 'disconnected', HYDRATION: 'disconnected', ENVIRONMENT: 'disconnected' },
   isRecording: false,
   isSyncing: false, 
   fileName: 'DHT_Session_01',
@@ -48,8 +49,7 @@ export const useSensorStore = create<SensorState>((set, get) => ({
 
   addInterest: (id) => set((state) => ({ activeInterests: [...new Set([...state.activeInterests, id])] })),
   removeInterest: (id) => set((state) => ({ activeInterests: state.activeInterests.filter(i => i !== id) })),
-  addConnectedNode: (id) => set((state) => ({ connectedNodes: [...new Set([...state.connectedNodes, id])] })),
-  removeConnectedNode: (id) => set((state) => ({ connectedNodes: state.connectedNodes.filter(i => i !== id) })),
+  setNodeStatus: (nodeId, status) => set((state) => ({ nodeStatus: { ...state.nodeStatus, [nodeId]: status } })),
   setRecording: (status) => set({ isRecording: status }),
   setIsSyncing: (status) => set({ isSyncing: status }), 
   setFileName: (name) => set({ fileName: name }),
