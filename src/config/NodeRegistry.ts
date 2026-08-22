@@ -5,6 +5,15 @@ export const NODES = {
     serviceUUID: "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
     charUUID: "beb5483e-36e1-4688-b7f5-ea07361b26a8",
   },
+  GAIT_LEFT: {
+    id: 'GAIT_LEFT',
+    name: 'Gait-Twin-Node-Left',
+    // Same service/characteristic UUIDs as GAIT (right foot) by design — the firmware reuses
+    // them deliberately; nodes are told apart by BLE device name and by which MAC address gets
+    // bound to which node id in the app, not by UUID.
+    serviceUUID: "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+    charUUID: "beb5483e-36e1-4688-b7f5-ea07361b26a8",
+  },
   POSTURE: {
     id: 'POSTURE',
     name: 'Posture-Twin-Node',

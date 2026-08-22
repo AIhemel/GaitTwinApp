@@ -1,0 +1,646 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>GaitTwinApp — Development Guide</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm 22mm 18mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1a202c;
+    line-height: 1.55;
+    font-size: 13.5px;
+  }
+  .cover {
+    height: 250mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    break-after: page;
+  }
+  .cover .logo {
+    width: 72px; height: 72px; border-radius: 36px; background: #2196F3;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 34px; color: white; margin-bottom: 24px;
+  }
+  .cover h1 { font-size: 30px; margin: 0 0 8px 0; color: #1a202c; }
+  .cover .subtitle { font-size: 15px; color: #718096; margin-bottom: 40px; }
+  .cover .meta { font-size: 12px; color: #a0aec0; margin-top: 60px; }
+  .cover .meta div { margin: 3px 0; }
+
+  h1 { font-size: 22px; color: #1a202c; border-bottom: 3px solid #2196F3; padding-bottom: 8px; margin-top: 0; break-before: page; }
+  h1:first-of-type { break-before: avoid; }
+  h2 { font-size: 17px; color: #1a202c; margin-top: 28px; border-left: 4px solid #2196F3; padding-left: 10px; }
+  h3 { font-size: 14.5px; color: #2d3748; margin-top: 20px; }
+  h4 { font-size: 13px; color: #4a5568; margin-top: 14px; margin-bottom: 6px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    background: #edf2f7; color: #b83280; padding: 1px 5px; border-radius: 4px; font-size: 12px;
+  }
+  pre {
+    background: #1a202c; color: #e2e8f0; padding: 12px 14px; border-radius: 8px;
+    overflow-x: auto; font-size: 11.5px; line-height: 1.5;
+    break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .file-path {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; font-weight: 600;
+    color: #2b6cb0; background: #ebf8ff; padding: 3px 8px; border-radius: 5px; display: inline-block;
+    margin: 10px 0 4px 0;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12px; }
+  th, td { border: 1px solid #e2e8f0; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f7fafc; font-weight: 600; }
+  .callout {
+    background: #ebf8ff; border-left: 4px solid #2196F3; padding: 10px 14px; border-radius: 6px;
+    margin: 12px 0; font-size: 12.5px; break-inside: avoid;
+  }
+  .callout.warn { background: #fffbeb; border-left-color: #d69e2e; }
+  .callout.tip { background: #f0fff4; border-left-color: #38a169; }
+  .callout b { display: block; margin-bottom: 3px; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .step {
+    display: flex; gap: 12px; margin: 14px 0; break-inside: avoid;
+  }
+  .step-num {
+    flex-shrink: 0; width: 26px; height: 26px; border-radius: 13px; background: #2196F3; color: white;
+    display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 13px;
+  }
+  .step-body { flex: 1; }
+  .toc { break-after: page; }
+  .toc ol { list-style: none; padding-left: 0; }
+  .toc > ol > li { margin: 10px 0; font-size: 14px; font-weight: 600; }
+  .toc ol ol { padding-left: 20px; margin-top: 4px; }
+  .toc ol ol li { font-size: 12.5px; font-weight: 400; color: #4a5568; margin: 3px 0; }
+  .badge {
+    display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .badge.fix { background: #fed7d7; color: #c53030; }
+  .badge.feature { background: #c6f6d5; color: #276749; }
+  .badge.native { background: #e9d8fd; color: #6b46c1; }
+  hr { border: none; border-top: 1px solid #e2e8f0; margin: 22px 0; }
+  .small { font-size: 11px; color: #718096; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="logo">&#9889;</div>
+  <h1>GaitTwinApp Development Guide</h1>
+  <div class="subtitle">A record of everything built this session, and how to extend it yourself</div>
+  <div class="meta">
+    <div>Digital Health Twin — Multi-Node WBAN Orchestrator</div>
+    <div>React Native 0.85 &middot; RN CLI &middot; Android</div>
+    <div>Generated 2026-08-13</div>
+  </div>
+</div>
+
+<div class="toc">
+<h1 style="break-before: avoid;">Contents</h1>
+<ol>
+  <li>Overview &amp; Architecture
+    <ol>
+      <li>What this app does</li>
+      <li>The core pattern: Registry &rarr; Store &rarr; Service &rarr; Screen</li>
+      <li>File map</li>
+    </ol>
+  </li>
+  <li>Everything Built This Session
+    <ol>
+      <li>Documentation (CLAUDE.md)</li>
+      <li>Bug fixes to the original app</li>
+      <li>Feature: connection health &amp; auto-reconnect</li>
+      <li>Feature: live sensor charts</li>
+      <li>Feature: session/export management</li>
+      <li>Feature: GPS tracking, live map &amp; weather heat-marks</li>
+      <li>CSV integrity fixes</li>
+      <li>Feature: Google Health Connect fitness integration</li>
+    </ol>
+  </li>
+  <li>How to Add a New BLE Sensor Node <span class="small">(worked example: the Posture / chair node)</span></li>
+  <li>How to Add a New Health Connect Data Type <span class="small">(worked example: Hydration)</span></li>
+  <li>Lessons Learned &amp; Common Pitfalls</li>
+  <li>Quick-Reference Checklists</li>
+</ol>
+</div>
+
+<h1>1. Overview &amp; Architecture</h1>
+
+<h2>1.1 What this app does</h2>
+<p>
+GaitTwinApp is the mobile half of a thesis project called the "Digital Health Twin": a multi-node
+wireless body-area-network (WBAN) that streams sensor data from several wearable ESP32 devices
+(an instrumented gait insole, a smart hydration bottle, and in the future a posture sensor and an
+environment sensor) directly to a phone over Bluetooth LE. The phone app connects to each device,
+decodes its binary sensor payload, shows it live, and logs everything to a synchronized CSV file
+on the phone's Downloads folder — no separate server or laptop required.
+</p>
+<p>
+Over this session the app grew from a single-screen BLE logger into a small platform: it gained
+connection-health tracking with auto-reconnect, live trend charts, a session file manager, GPS
+route tracking with a live map colored by local weather, and an integration with Android's Health
+Connect that pulls data from any connected fitness band (the motivating case: a Xiaomi Mi Band 10)
+into its own tab.
+</p>
+
+<h2>1.2 The core pattern: Registry &rarr; Store &rarr; Service &rarr; Screen</h2>
+<p>
+Every data source in this app — a BLE node, GPS, or a Health Connect data type — is built the
+same four-layer way. Once you recognize this pattern, every feature in the app (and every feature
+you add yourself) reads the same way:
+</p>
+<table>
+  <tr><th style="width:18%">Layer</th><th>Responsibility</th><th>Example files</th></tr>
+  <tr>
+    <td><b>Registry</b></td>
+    <td>Plain config. No logic, no React, no state. Just "here is the list of things this app knows about" — one entry per BLE node or per Health Connect data type.</td>
+    <td><code>NodeRegistry.ts</code>, <code>HealthConnectRegistry.ts</code></td>
+  </tr>
+  <tr>
+    <td><b>Store</b></td>
+    <td>A Zustand store holding the current state for that data source: latest values, connection status, user settings. Nothing in the app talks to hardware directly from the UI — it all goes through a store.</td>
+    <td><code>SensorStore.ts</code>, <code>LocationStore.ts</code>, <code>FitStore.ts</code>, <code>ChartStore.ts</code></td>
+  </tr>
+  <tr>
+    <td><b>Service</b></td>
+    <td>The actual engine: connects to BLE, decodes bytes, watches GPS, polls Health Connect, writes CSV files. Runs independently of any screen being open.</td>
+    <td><code>BackgroundOrchestrator.ts</code>, <code>LocationService.ts</code>, <code>HealthConnectService.ts</code>, <code>SessionService.ts</code>, <code>FitDataService.ts</code></td>
+  </tr>
+  <tr>
+    <td><b>Screen / UI</b></td>
+    <td>Presentation only. Reads from a store, renders it, and calls service functions on button press. Never touches BLE/GPS/Health Connect APIs directly.</td>
+    <td><code>App.tsx</code>, <code>MapScreen.tsx</code>, <code>SessionManagerScreen.tsx</code>, <code>FitDataManagerScreen.tsx</code></td>
+  </tr>
+</table>
+<div class="callout tip">
+  <b>Why this matters for you</b>
+  Because the layers are separated this way, adding a new BLE node or a new Health Connect data
+  type never means rewriting the UI. You add one config entry, teach the Service how to decode it,
+  and the existing screens either pick it up automatically (BLE nodes) or need one small loop
+  addition (Health Connect types). Sections 3 and 4 of this guide walk through both, in full.
+</div>
+
+<h2>1.3 File map</h2>
+<table>
+  <tr><th>Path</th><th>What it is</th></tr>
+  <tr><td colspan="2"><b>Sensor / BLE pipeline</b></td></tr>
+  <tr><td><code>src/config/NodeRegistry.ts</code></td><td>List of BLE nodes (GAIT, POSTURE, HYDRATION, ENVIRONMENT) with their service/characteristic UUIDs.</td></tr>
+  <tr><td><code>src/store/SensorStore.ts</code></td><td>Live per-node connection status, bindings, latest decoded readings, recording state.</td></tr>
+  <tr><td><code>src/services/BackgroundOrchestrator.ts</code></td><td>Scans for BLE devices, connects, decodes payloads, writes the 20ms-tick sensor CSV, handles reconnects.</td></tr>
+  <tr><td><code>src/services/SessionService.ts</code></td><td>List/rename/delete recorded sensor CSV sessions.</td></tr>
+  <tr><td><code>src/screens/SessionManagerScreen.tsx</code></td><td>UI for the above.</td></tr>
+  <tr><td><code>src/store/ChartStore.ts</code>, <code>src/components/Sparkline.tsx</code></td><td>Rolling in-memory history per metric, and the bar-sparkline that renders it.</td></tr>
+  <tr><td colspan="2"><b>GPS / Map pipeline</b></td></tr>
+  <tr><td><code>src/store/LocationStore.ts</code></td><td>Current position, recorded path, weather cache, GPS on/off toggle.</td></tr>
+  <tr><td><code>src/services/LocationService.ts</code></td><td>Watches GPS, fetches weather (Open-Meteo, no API key) for the current location.</td></tr>
+  <tr><td><code>src/screens/MapScreen.tsx</code>, <code>src/screens/mapHtml.ts</code></td><td>A WebView running a self-contained Leaflet/OpenStreetMap page, fed incrementally from React via <code>injectJavaScript</code>.</td></tr>
+  <tr><td colspan="2"><b>Health Connect / Fit pipeline</b></td></tr>
+  <tr><td><code>src/config/HealthConnectRegistry.ts</code></td><td>List of Health Connect record types this app reads (steps, heart rate, sleep, &hellip;).</td></tr>
+  <tr><td><code>src/store/FitStore.ts</code></td><td>Granted permissions, latest value per type, per-type sync watermark, sync settings.</td></tr>
+  <tr><td><code>src/services/HealthConnectService.ts</code></td><td>Health Connect init/permissions, the watermark-based sync loop, CSV row builders.</td></tr>
+  <tr><td><code>src/services/FitDataService.ts</code>, <code>src/screens/FitDataManagerScreen.tsx</code></td><td>List/rename/delete/preview Fit CSVs.</td></tr>
+  <tr><td colspan="2"><b>App shell</b></td></tr>
+  <tr><td><code>App.tsx</code></td><td>The whole UI: Sensors/Fit tab bar, all data cards, all modals. Presentation-only.</td></tr>
+</table>
+
+<h1>2. Everything Built This Session</h1>
+
+<h2>2.1 Documentation</h2>
+<p>
+The session started by writing <code>CLAUDE.md</code> files (one at the thesis-repo root, one inside
+<code>server/GaitTwinApp/</code>) documenting the whole monorepo and this app's architecture in
+detail, so future work — by you or by an AI assistant — starts from an accurate map instead of
+re-discovering the codebase from scratch each time.
+</p>
+
+<h2>2.2 Bug fixes to the original app <span class="badge fix">fixes</span></h2>
+<p>An audit of the original code found and fixed nine real bugs:</p>
+<table>
+  <tr><th style="width:26%">Bug</th><th>Fix</th></tr>
+  <tr><td>CSV header duplicated if the app restarted mid-session</td><td>Header is only written if the file doesn't already exist, checked once at recording-start.</td></tr>
+  <tr><td>A failed CSV write silently discarded that batch of data</td><td>The pending batch is only cleared from memory after the write actually succeeds; on failure it's re-queued.</td></tr>
+  <tr><td>No detection of a BLE device disconnecting after a successful connection</td><td>Real <code>device.onDisconnected()</code> listeners added, feeding a proper 4-state <code>nodeStatus</code> (disconnected/connecting/connected/reconnecting) that drives auto-reconnect.</td></tr>
+  <tr><td>Recording could start against a node that looked "bound" but wasn't actually connected</td><td>A confirm dialog now warns and lets you override, instead of silently logging zeros.</td></tr>
+  <tr><td>Hydration calibration commands (TARE/CAL_W/CAL_C) always reported "Command Sent" even when the BLE write failed</td><td><code>sendHydrationCommand</code> now returns success/failure and the UI reflects it honestly.</td></tr>
+  <tr><td>BLE scan errors (Bluetooth off, permission denied) were silently swallowed</td><td>Surfaced as visible text in the device-bind modal.</td></tr>
+  <tr><td>A stale scan-timeout could stop the wrong scan</td><td>Timeout is tracked in a ref and cleared properly on every new scan/close/unmount.</td></tr>
+  <tr><td>Boot only checked one of four requested Android permissions before starting BLE</td><td>Now checks the two that actually gate scanning (<code>BLUETOOTH_SCAN</code> + <code>BLUETOOTH_CONNECT</code>) and warns if any are missing.</td></tr>
+  <tr><td>No validation on calibration number inputs</td><td>Rejects empty/non-numeric input before sending.</td></tr>
+</table>
+<div class="callout">
+  <b>Bonus fix</b>
+  The project's Jest test suite was completely broken before this session (native modules aren't
+  mocked by default). Added <code>transformIgnorePatterns</code> to <code>jest.config.js</code> and
+  manual mocks under <code>__mocks__/</code> for every native package used, so <code>npm test</code>
+  actually runs again.
+</div>
+
+<h2>2.3 Feature: connection health &amp; auto-reconnect <span class="badge feature">feature</span></h2>
+<p>
+Replaced the old boolean <code>connectedNodes</code> array with a real state machine,
+<code>nodeStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'</code>, driven by
+BLE's own disconnect events. The continuous BLE scan naturally reconnects a dropped node; a
+3-second per-node cooldown avoids hammering a device that's actively rejecting connections. The
+Node Assignments card shows live 4-color status, and a banner warns if a node drops mid-recording.
+</p>
+
+<h2>2.4 Feature: live sensor charts <span class="badge feature">feature</span></h2>
+<p>
+Added <code>ChartStore.ts</code> — a small ring buffer (60 samples) per metric, fed at a throttled
+4&nbsp;Hz from the BLE decode callbacks (independent of the 20ms CSV clock). <code>Sparkline.tsx</code>
+renders it as plain colored <code>View</code> bars — deliberately no charting library, keeping the
+app's zero-heavy-dependency style. Every gait and hydration tile grew a small trend sparkline under
+its number.
+</p>
+
+<h2>2.5 Feature: session/export management <span class="badge feature">feature</span></h2>
+<p>
+Recordings moved into <code>Downloads/GaitTwin/</code> with a <code>.meta.json</code> sidecar
+(start time, app version, node bindings) written alongside each CSV. A new Session Manager screen
+lists, renames, and deletes past recordings. CSV sharing was explicitly scoped out — it needs a
+<code>FileProvider</code> manifest entry, deferred as a separate native-config pass.
+</p>
+
+<h2>2.6 Feature: GPS tracking, live map &amp; weather heat-marks <span class="badge feature">feature</span> <span class="badge native">native dependency</span></h2>
+<p>
+Added <code>@react-native-community/geolocation</code> (GPS) and <code>react-native-webview</code>
+(to host a Leaflet map). GPS tracking is tied to the recording session and toggled by a master
+switch that takes effect immediately, even mid-recording. Local weather (temperature + humidity) is
+fetched from <b>Open-Meteo</b> — a free, keyless API — throttled to once per 1&nbsp;km moved or 5
+minutes, whichever comes first, and used to color-code the route on the map from blue (cold) to red
+(hot). The map itself is a self-contained HTML/Leaflet page (<code>mapHtml.ts</code>) loaded into a
+WebView, fed new points incrementally via <code>injectJavaScript</code> rather than reloading the
+whole page. Speed comes straight from the GPS fix.
+</p>
+<div class="callout warn">
+  <b>Bug found &amp; fixed after initial ship</b>
+  The GPS toggle originally only took effect the <i>next</i> time "Start Recording" was pressed —
+  flipping it mid-session silently did nothing. Fixed so toggling it while already recording starts
+  or stops tracking immediately. Also added real permission re-requesting (it was only checking,
+  never asking) and visible error banners for permission/GPS failures, since the original version
+  failed completely silently.
+</div>
+
+<h2>2.7 CSV integrity fixes <span class="badge fix">fixes</span></h2>
+<p>
+Two more real bugs surfaced once GPS data started flowing into the CSV:
+</p>
+<ul>
+  <li><b>Added a <code>Wall_Clock_ISO</code> column</b> (an absolute timestamp, e.g.
+    <code>2026-07-29T14:32:01.123Z</code>) right after <code>System_MS</code>, so every row has a
+    real-world time, not just a session-relative millisecond counter.</li>
+  <li><b>Fixed silent column-shift corruption.</b> The app only ever wrote the CSV header once per
+    filename; every time the row format changed (which happened twice — once for GPS/weather
+    columns, once for the wall-clock column) any file that already existed under that name kept its
+    <i>old</i> header while new rows used the <i>new</i>, longer format — silently shifting every
+    value one or more columns to the right relative to the header labels. Fixed by comparing the
+    existing file's actual first line against the current header at recording-start; on a mismatch,
+    the app automatically starts a new, timestamp-suffixed file instead of corrupting the old one,
+    and tells you so with an on-screen alert.</li>
+</ul>
+<p>The final column order, deliberately, is time and location first, then sensors:</p>
+<pre>System_MS, Wall_Clock_ISO, GPS_Lat, GPS_Lon, GPS_Speed_mps, Weather_Temp_C, Weather_Humidity_Pct,
+Gait_Pitch, Gait_Roll, Gait_Yaw, Gait_Heel, Gait_Mid, Gait_Toe, Posture_Spine,
+Hydro_Fused_mL, Hydro_Weight_g, Hydro_Cap_mL, Env_Temp, Env_Hum</pre>
+
+<h2>2.8 Feature: Google Health Connect fitness integration <span class="badge feature">feature</span> <span class="badge native">native dependency</span></h2>
+<p>
+You asked for "Google Fit" integration for a Mi Band 10. Google has been shutting down the Google
+Fit APIs in favor of <b>Health Connect</b>, its replacement — so that's what was built instead, via
+the community library <code>react-native-health-connect</code>. Unlike Google Fit, Health Connect
+needs no Google Cloud project, no OAuth screen, no API key — just a single on-device Android
+permission dialog, the same pattern as the app's existing BLE/location permissions.
+</p>
+<h4>What it does</h4>
+<ul>
+  <li>A new lightweight <b>"Fit" tab</b> next to the existing "Sensors" tab (a plain custom tab bar
+    — no navigation library added).</li>
+  <li>Reads 16 record types: steps, distance, heart rate, resting heart rate, sleep sessions, active
+    &amp; total calories, blood oxygen (SpO2), exercise sessions, speed, floors climbed, VO2 max,
+    respiratory rate, body temperature, weight, height. (Reproductive-health record types were
+    deliberately excluded — not relevant to fitness-band tracking.)</li>
+  <li><b>Auto-syncs every 10 minutes</b> (5/10/15 min presets in the UI) using a
+    <b>watermark</b> per data type — each poll only asks Health Connect for records newer than the
+    last one it successfully saved, so no interval choice can ever create a gap, and an idle poll
+    costs almost nothing.</li>
+  <li>Writes to <code>Downloads/GaitTwin/FitData/Fit_&lt;date&gt;.csv</code>, one row per record in
+    a single shared "long format" — <code>Wall_Clock_Start_ISO, Wall_Clock_End_ISO, DataType, Value,
+    Unit, SourceApp, ExtraJSON</code> — so adding a new record type later never needs a CSV schema
+    change (see Section 4).</li>
+  <li>A Fit Data Manager screen (mirrors the Session Manager) lists, renames, deletes, and previews
+    past Fit files with a per-type sparkline.</li>
+</ul>
+<h4>Native changes this required</h4>
+<table>
+  <tr><td><code>android/build.gradle</code></td><td><code>minSdkVersion</code> raised 24&rarr;26 (Health Connect's own hard requirement) — drops Android 7.x support.</td></tr>
+  <tr><td><code>AndroidManifest.xml</code></td><td>16 <code>android.permission.health.READ_*</code> lines, one background-data permission, a <code>&lt;queries&gt;</code> declaration for the Health Connect app, and a required "permissions rationale" activity + its Android-14 alias.</td></tr>
+  <tr><td><code>PermissionsRationaleActivity.kt</code></td><td>New file — a minimal screen Health Connect requires apps to have, explaining what data is read and why.</td></tr>
+  <tr><td><code>MainActivity.kt</code></td><td>Wires <code>HealthConnectPermissionDelegate</code> so permission dialogs work.</td></tr>
+</table>
+<div class="callout">
+  <b>How the API details were verified</b>
+  Rather than guessing field names, the actual installed package's TypeScript definitions were read
+  directly to confirm exact API shapes — e.g. that Health Connect returns physical quantities as
+  wrapped objects (<code>distance.inMeters</code>, <code>weight.inKilograms</code>, not plain
+  numbers), and that <code>readRecords</code> is paginated via a <code>pageToken</code>. A real
+  <code>./gradlew assembleDebug</code> and a Metro bundle were both run successfully to catch native
+  and bundling errors before calling the feature done.
+</div>
+
+<h1>3. How to Add a New BLE Sensor Node</h1>
+<p>
+Worked example: turning the already-stubbed <b>Posture node</b> (your "chair" sensor) from a
+placeholder into a real, working node. The exact same four steps apply to the <b>Environment</b>
+node, or to any brand-new BLE sensor you build later — only the byte-decoding in Step 3 changes.
+</p>
+<div class="callout">
+  <b>Current state</b>
+  <code>NodeRegistry.ts</code> already lists <code>POSTURE</code> with placeholder UUIDs
+  (<code>YOUR_POSTURE_SERVICE_UUID</code>). It already shows up in the app's Node Assignments list
+  and can be "Bound" to a MAC address and toggled on — but <code>BackgroundOrchestrator.ts</code>
+  has no connect/decode logic for it yet (look for the comment
+  <code>// (Future Posture and Environment nodes go here...)</code>). That's the one real gap these
+  steps close.
+</div>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3>Fill in the real BLE UUIDs</h3>
+    <div class="file-path">src/config/NodeRegistry.ts</div>
+    <p>Replace the placeholder strings with the actual service/characteristic UUIDs from your
+    ESP32 firmware's BLE server setup (whatever you set in your Arduino/ESP-IDF code):</p>
+    <pre>POSTURE: {
+  id: 'POSTURE',
+  name: 'Posture-Twin-Node',
+  serviceUUID: "your-real-service-uuid-here",
+  charUUID: "your-real-characteristic-uuid-here",
+},</pre>
+    <p class="small">That's the only change needed in this file. Everything downstream (the Node
+    Assignments card, the Bind flow, the active-interest toggle) already works generically off
+    whatever is in this <code>NODES</code> object — you don't touch <code>App.tsx</code> for this
+    part at all.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Check the store already has a field for it (it does, for Posture)</h3>
+    <div class="file-path">src/store/SensorStore.ts</div>
+    <p><code>posture: { spineAngle: number }</code> and <code>updatePosture()</code> already exist —
+    this was left in from the original app. If you were adding a brand-new node instead (not
+    Posture/Environment), you'd add a matching block here first:</p>
+    <pre>// 1. Add to the state shape
+posture: { spineAngle: number };
+updatePosture: (data: Partial&lt;SensorState['posture']&gt;) => void;
+
+// 2. Add to the initial state
+posture: { spineAngle: 0 },
+
+// 3. Add the update action
+updatePosture: (data) => set((state) => ({ posture: { ...state.posture, ...data } })),</pre>
+    <p class="small">Also make sure <code>nodeStatus</code> and <code>nodeBindings</code>' initial
+    objects include your node's id — for Posture/Environment they already do
+    (<code>{ GAIT: ..., POSTURE: ..., HYDRATION: ..., ENVIRONMENT: ... }</code>).</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Add the connect + decode block</h3>
+    <div class="file-path">src/services/BackgroundOrchestrator.ts</div>
+    <p>This is the real work. Find the comment
+    <code>// (Future Posture and Environment nodes go here...)</code> near the bottom of the scan
+    callback, and add a block that mirrors the existing GAIT/HYDRATION ones exactly — same
+    connect-chain shape, same status transitions, same subscription cleanup:</p>
+    <pre>// ==========================================
+// NODE 3: POSTURE (adjust byte length/offsets to match your firmware)
+// ==========================================
+if (
+  device.id === nodeBindings.POSTURE &amp;&amp;
+  activeInterests.includes(NODES.POSTURE.id) &amp;&amp;
+  canAttemptConnect(NODES.POSTURE.id, nodeStatus[NODES.POSTURE.id])
+) {
+  setNodeStatus(NODES.POSTURE.id, 'connecting');
+
+  device.connect()
+    .then(dev => dev.requestMTU(128))
+    .then(dev => dev.discoverAllServicesAndCharacteristics())
+    .then(dev => {
+      setNodeStatus(NODES.POSTURE.id, 'connected');
+
+      deviceSubscriptions[NODES.POSTURE.id] = deviceSubscriptions[NODES.POSTURE.id] || {};
+      deviceSubscriptions[NODES.POSTURE.id].disconnect = dev.onDisconnected(() => {
+        handleNodeDisconnected(NODES.POSTURE.id);
+      });
+
+      deviceSubscriptions[NODES.POSTURE.id].monitor = dev.monitorCharacteristicForService(
+        NODES.POSTURE.serviceUUID, NODES.POSTURE.charUUID, (err, char) => {
+          if (err) {
+            handleNodeDisconnected(NODES.POSTURE.id);
+            return;
+          }
+          if (char?.value) {
+            const buf = Buffer.from(char.value, 'base64');
+            // Match this EXACTLY to your ESP32 struct's byte layout and total size.
+            if (buf.length === 4) {  // e.g. one 4-byte float
+              const spineAngle = buf.readFloatLE(0);
+              updatePosture({ spineAngle });
+              pushChartSample('posture.spineAngle', spineAngle);
+            }
+          }
+        }
+      );
+    })
+    .catch(() => {
+      lastDisconnectTime[NODES.POSTURE.id] = Date.now();
+      setNodeStatus(NODES.POSTURE.id, 'disconnected');
+    });
+}</pre>
+    <div class="callout warn">
+      <b>The one thing you must get exactly right</b>
+      The byte offsets (<code>buf.readFloatLE(0)</code>, the expected <code>buf.length</code>) must
+      match your ESP32 firmware's struct packing <i>byte for byte</i>. If your posture sensor sends,
+      say, a 3-axis accelerometer as three floats, that's a 12-byte payload:
+      <code>pitch = buf.readFloatLE(0)</code>, <code>roll = buf.readFloatLE(4)</code>,
+      <code>yaw = buf.readFloatLE(8)</code>, and your <code>if (buf.length === 12)</code> guard.
+      Getting this wrong doesn't crash the app — it just silently produces garbage numbers, so
+      double-check your firmware's struct definition before writing this block.
+    </div>
+    <p>You also need to destructure your new update function at the top of the scan callback,
+    alongside the existing ones:</p>
+    <pre>const { activeInterests, nodeBindings, nodeStatus, setNodeStatus, updateGait, updateHydration, updatePosture } = store;</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Add its columns to the CSV</h3>
+    <div class="file-path">src/services/BackgroundOrchestrator.ts</div>
+    <p><code>Posture_Spine</code> is actually already in the CSV header (left over from the original
+    app) and already being written from <code>posture.spineAngle</code> in the 20ms logger. If you
+    add fields beyond what's already there, you must update <b>all three</b> of these together, or
+    the header and the rows go out of sync — exactly the column-shift bug described in Section 2.7:</p>
+    <ol>
+      <li>The <code>CSV_HEADER</code> string constant — add your new column name(s).</li>
+      <li>The row-building template string inside <code>startMasterClock()</code>'s 20ms
+        <code>setInterval</code> — add the new value(s) in the <i>same position</i>.</li>
+      <li>The hydration offline-burst <code>historicalRow</code> template — add the same number of
+        empty placeholder fields (<code>,,</code>) in the same position, since that row is built
+        from a different code path and must stay the same column count.</li>
+    </ol>
+    <div class="callout tip">
+      Because the app now detects a header mismatch and automatically forks to a new file (Section
+      2.7's fix), you can't accidentally corrupt an old file by doing this — worst case, your next
+      recording just starts a new, differently-named CSV and tells you why.
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>(Optional) Give it its own UI card</h3>
+    <div class="file-path">App.tsx</div>
+    <p>The Node Assignments list, Bind flow, and on/off Switch already work automatically for any
+    node in <code>NodeRegistry.ts</code> — nothing to do there. The <b>Posture Analysis Node</b> data
+    card already exists in <code>App.tsx</code> too, showing <code>posture.spineAngle</code>. If you
+    add more fields than just spine angle, add more <code>gridItem</code>s to that card the same way
+    the Gait card shows six values, optionally with a <code>&lt;Sparkline metricKey="posture.spineAngle" /&gt;</code>
+    under each, matching the existing style.</p>
+  </div>
+</div>
+
+<h2>3.1 Same steps for the Environment node</h2>
+<p>
+<code>ENVIRONMENT</code> works identically: fill in its real UUIDs in Step 1, its
+<code>environment: { temp, humidity }</code> state and <code>updateEnvironment()</code> action
+already exist in the store, its <code>Env_Temp,Env_Hum</code> columns already exist in the CSV, and
+its data card already exists in <code>App.tsx</code>. You only need Step 3 — the connect/decode
+block — matched to whatever your temperature/humidity sensor's payload actually looks like.
+</p>
+
+<h1>4. How to Add a New Health Connect Data Type</h1>
+<p>
+This is deliberately much shorter than adding a BLE node, because the Fit pipeline was built
+specifically to make this cheap. Worked example: adding <b>Hydration</b> (Health Connect already
+tracks water intake logged by many apps).
+</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3>Add one row to the registry</h3>
+    <div class="file-path">src/config/HealthConnectRegistry.ts</div>
+    <pre>{ id: 'HYDRATION', recordType: 'Hydration', shape: 'interval',
+  permission: 'android.permission.health.READ_HYDRATION',
+  unit: 'L', label: 'Hydration', color: '#3182ce' },</pre>
+    <p><code>shape</code> must be one of the four the app already knows how to handle — pick
+    whichever matches the new type's structure:</p>
+    <table>
+      <tr><th>Shape</th><th>Use for</th></tr>
+      <tr><td><code>instant</code></td><td>A single timestamp + single value (e.g. Weight, SpO2, VO2 Max).</td></tr>
+      <tr><td><code>interval</code></td><td>A start/end time span + one summary number (e.g. Steps, Distance, Calories — and Hydration).</td></tr>
+      <tr><td><code>session</code></td><td>A start/end span with rich nested detail, no single number (e.g. Sleep, Exercise).</td></tr>
+      <tr><td><code>series</code></td><td>A record wrapping many inner timestamped samples (e.g. Heart Rate, Speed).</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Add the manifest permission line</h3>
+    <div class="file-path">android/app/src/main/AndroidManifest.xml</div>
+    <pre>&lt;uses-permission android:name="android.permission.health.READ_HYDRATION" /&gt;</pre>
+    <p class="small">Add it next to the other 16 <code>android.permission.health.READ_*</code> lines.
+    This requires a native rebuild (<code>./gradlew clean</code> then reinstall) to take effect,
+    same as any other manifest change.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Teach the value extractor how to read it</h3>
+    <div class="file-path">src/services/HealthConnectService.ts</div>
+    <p>Since <code>Hydration</code> is an <code>interval</code> shape, add one case to the
+    <code>extractScalar()</code> switch statement. The exact field name (<code>volume</code>, and
+    its unit accessor) comes from Health Connect's own record shape — check the installed package's
+    type definitions (<code>node_modules/react-native-health-connect/lib/typescript/types/records.types.d.ts</code>)
+    rather than guessing, the same way this was verified for the 16 types already in the app:</p>
+    <pre>case 'HYDRATION': return { value: record.volume?.inLiters ?? null };</pre>
+    <p>That's the only code change needed — the row-builder, CSV writer, watermark sync, permission
+    request, and the Fit tab's tile grid all already loop generically over every entry in
+    <code>HEALTH_DATA_TYPES</code>, so your new type appears automatically everywhere once it's
+    granted.</p>
+  </div>
+</div>
+
+<div class="callout tip">
+  <b>That's it — three small edits, zero UI code, zero CSV schema change.</b>
+  This is the payoff of the "long format" CSV decision in Section 2.8: every Health Connect record
+  type, no matter how different its shape, writes into the same seven CSV columns
+  (<code>Wall_Clock_Start_ISO, Wall_Clock_End_ISO, DataType, Value, Unit, SourceApp, ExtraJSON</code>).
+</div>
+
+<h1>5. Lessons Learned &amp; Common Pitfalls</h1>
+<ul>
+  <li><b>Any time you add a CSV column, update all three places at once</b> (header, live-row
+    template, offline-burst-row template) — this was the root cause of two real bugs this session.
+    The app now detects a stale header automatically and forks to a new file rather than silently
+    corrupting data, but it's still better to get it right the first time.</li>
+  <li><b>BLE byte-decoding mistakes are silent.</b> A wrong offset or wrong <code>buf.length</code>
+    guard doesn't throw an error — it just produces wrong numbers or no update at all. Always
+    double-check against your ESP32 firmware's actual struct packing.</li>
+  <li><b>Health Connect (and most typed native APIs) wrap physical quantities in unit objects</b>
+    (<code>distance.inMeters</code>, not a plain number) — always check the installed package's
+    real TypeScript definitions before writing extraction code, rather than assuming a shape.</li>
+  <li><b>New native dependencies need a real rebuild.</b> Metro's fast refresh only reloads
+    JavaScript — adding a package like <code>react-native-health-connect</code> or
+    <code>react-native-webview</code>, or changing <code>minSdkVersion</code>/the Android manifest,
+    requires <code>cd android &amp;&amp; ./gradlew clean</code> and a fresh
+    <code>npm run android</code>, not just a Metro reload.</li>
+  <li><b>A toggle that "starts something" should take effect immediately, not just next session.</b>
+    The GPS-toggle bug (Section 2.6) was exactly this: the switch updated a setting but didn't
+    actually start/stop the underlying watcher unless a new recording session began afterward.
+  </li>
+  <li><b>Jest doesn't know about native modules by default.</b> Any new native package
+    (BLE, filesystem, geolocation, WebView, Health Connect) usually needs either a
+    <code>transformIgnorePatterns</code> entry (if it ships untranspiled ES modules) or a manual
+    mock under <code>__mocks__/</code> (if it touches a native module at import time), or the test
+    suite breaks the moment you import it.</li>
+</ul>
+
+<h1>6. Quick-Reference Checklists</h1>
+
+<h3>Adding a new BLE sensor node</h3>
+<ol>
+  <li><code>NodeRegistry.ts</code> — real service/characteristic UUIDs.</li>
+  <li><code>SensorStore.ts</code> — state field + update action (skip if reusing Posture/Environment, already present).</li>
+  <li><code>BackgroundOrchestrator.ts</code> — connect/decode block, matched to your firmware's exact byte layout.</li>
+  <li><code>BackgroundOrchestrator.ts</code> — CSV header + live-row template + offline-burst-row template, all three in sync.</li>
+  <li><code>App.tsx</code> — optional: extra grid items / sparklines on the existing data card if you added fields.</li>
+</ol>
+
+<h3>Adding a new Health Connect data type</h3>
+<ol>
+  <li><code>HealthConnectRegistry.ts</code> — one config row (id, recordType, shape, permission, unit, label, color).</li>
+  <li><code>AndroidManifest.xml</code> — one <code>&lt;uses-permission&gt;</code> line, matching the registry's <code>permission</code> field.</li>
+  <li><code>HealthConnectService.ts</code> — one <code>case</code> in the relevant extractor function (<code>extractScalar</code>, <code>extractSampleValue</code>, or <code>extractSessionSummary</code> depending on shape), field names verified against the installed package's type definitions.</li>
+  <li>Native rebuild (<code>./gradlew clean</code> + reinstall) for the manifest change to take effect.</li>
+</ol>
+
+<p class="small" style="margin-top:40px; text-align:center;">— End of guide —</p>
+
+</body>
+</html>

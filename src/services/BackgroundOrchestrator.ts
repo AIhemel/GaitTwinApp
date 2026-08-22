@@ -15,7 +15,7 @@ export const manager = new BleManager(); // Exported so App.tsx can use it for s
 
 // Time and location columns come first, deliberately, so "when and where" is always
 // visible at the start of the row without scrolling past the sensor columns.
-const CSV_HEADER = "System_MS,Wall_Clock_ISO,GPS_Lat,GPS_Lon,GPS_Speed_mps,Weather_Temp_C,Weather_Humidity_Pct,Gait_Pitch,Gait_Roll,Gait_Yaw,Gait_Heel,Gait_Mid,Gait_Toe,Posture_Spine,Hydro_Fused_mL,Hydro_Weight_g,Hydro_Cap_mL,Env_Temp,Env_Hum";
+const CSV_HEADER = "System_MS,Wall_Clock_ISO,GPS_Lat,GPS_Lon,GPS_Speed_mps,Weather_Temp_C,Weather_Humidity_Pct,Gait_Pitch,Gait_Roll,Gait_Yaw,Gait_Heel,Gait_Mid,Gait_Toe,Posture_Spine,Hydro_Fused_mL,Hydro_Weight_g,Hydro_Cap_mL,Env_Temp,Env_Hum,Gait_Left_Pitch,Gait_Left_Roll,Gait_Left_Yaw,Gait_Left_Heel,Gait_Left_Mid,Gait_Left_Toe";
 const SESSION_DIR = `${RNFS.DownloadDirectoryPath}/GaitTwin`;
 
 let csvBuffer: string[] = [];
@@ -65,6 +65,18 @@ const pushChartSample = (key: string, value: number) => {
   }
 };
 
+// Both gait nodes' firmware transmits a full orientation quaternion (qI/qJ/qK/qR = x/y/z/w) but
+// no standalone yaw float, so yaw is derived here rather than read off the wire. This is the
+// standard ZYX-Euler yaw extraction for an (x,y,z,w) quaternion — not independently verified
+// against this specific BNO08x mounting's exact axis convention, so sanity-check it against a
+// known physical rotation (e.g. turning the foot ~90° should move this by ~90°) before trusting
+// it for analysis; if it's off, the fix is almost certainly a sign flip or swapped axis here, not
+// a decode-offset problem.
+const quaternionToYawDegrees = (qI: number, qJ: number, qK: number, qR: number): number => {
+  const yawRad = Math.atan2(2 * (qR * qK + qI * qJ), 1 - 2 * (qJ * qJ + qK * qK));
+  return yawRad * (180 / Math.PI);
+};
+
 const sleep = (time: number) => new Promise<void>((resolve) => setTimeout(() => resolve(), time));
 
 const ensureSessionDir = async () => {
@@ -94,7 +106,7 @@ const startMasterClock = () => {
     if (!store.isRecording) return;
 
     const t = Date.now() - startTime;
-    const { gait, posture, hydration, environment } = store;
+    const { gait, gaitLeft, posture, hydration, environment } = store;
     const { currentPosition, currentWeather } = useLocationStore.getState();
 
     const lat = currentPosition ? currentPosition.latitude.toFixed(6) : '';
@@ -106,7 +118,7 @@ const startMasterClock = () => {
     const wallClock = new Date().toISOString();
 
     // Column order must always match CSV_HEADER exactly.
-    const row = `${t},${wallClock},${lat},${lon},${speed},${weatherTemp},${weatherHumidity},${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${hydration.fusedVolumeML.toFixed(1)},${hydration.weightGrams.toFixed(1)},${hydration.capVolumeML.toFixed(1)},${environment.temp},${environment.humidity}`;
+    const row = `${t},${wallClock},${lat},${lon},${speed},${weatherTemp},${weatherHumidity},${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${hydration.fusedVolumeML.toFixed(1)},${hydration.weightGrams.toFixed(1)},${hydration.capVolumeML.toFixed(1)},${environment.temp},${environment.humidity},${gaitLeft.pitch.toFixed(2)},${gaitLeft.roll.toFixed(2)},${gaitLeft.yaw.toFixed(2)},${gaitLeft.heel},${gaitLeft.mid},${gaitLeft.toe}`;
     csvBuffer.push(row);
   }, 20);
 
@@ -221,7 +233,7 @@ const orchestratorTask = async (taskDataArguments: any) => {
       if (error || !device) return;
 
       const store = useSensorStore.getState();
-      const { activeInterests, nodeBindings, nodeStatus, setNodeStatus, updateGait, updateHydration } = store;
+      const { activeInterests, nodeBindings, nodeStatus, setNodeStatus, updateGait, updateGaitLeft, updateHydration } = store;
 
       // ==========================================
       // NODE 1: GAIT ANALYSIS (46-Byte Payload - KEPT EXACTLY AS YOU HAD IT)
@@ -254,7 +266,13 @@ const orchestratorTask = async (taskDataArguments: any) => {
                 if (buf.length === 46) {
                    const pitch = buf.readFloatLE(4);
                    const roll = buf.readFloatLE(8);
-                   const yaw = buf.readFloatLE(12);
+                   // Offset 12 is the start of the orientation quaternion (qI/qJ/qK/qR), not a
+                   // standalone yaw float — see quaternionToYawDegrees for why yaw is derived here.
+                   const qI = buf.readFloatLE(12);
+                   const qJ = buf.readFloatLE(16);
+                   const qK = buf.readFloatLE(20);
+                   const qR = buf.readFloatLE(24);
+                   const yaw = quaternionToYawDegrees(qI, qJ, qK, qR);
                    const heel = buf.readUInt16LE(28);
                    const mid = buf.readUInt16LE(30);
                    const toe = buf.readUInt16LE(32);
@@ -274,6 +292,67 @@ const orchestratorTask = async (taskDataArguments: any) => {
           .catch(() => {
             lastDisconnectTime[NODES.GAIT.id] = Date.now();
             setNodeStatus(NODES.GAIT.id, 'disconnected');
+          });
+      }
+
+      // ==========================================
+      // NODE 1b: GAIT ANALYSIS - LEFT FOOT (46-Byte Payload)
+      // Identical byte layout to the right foot's GAIT node (same firmware, same struct): pitch@4,
+      // roll@8, quaternion qI/qJ/qK/qR@12-27, FSR uint16s at 28/30/32. Yaw is derived from the
+      // quaternion exactly as it is for the right foot — see quaternionToYawDegrees.
+      // ==========================================
+      if (
+        device.id === nodeBindings.GAIT_LEFT &&
+        activeInterests.includes(NODES.GAIT_LEFT.id) &&
+        canAttemptConnect(NODES.GAIT_LEFT.id, nodeStatus[NODES.GAIT_LEFT.id])
+      ) {
+        setNodeStatus(NODES.GAIT_LEFT.id, 'connecting');
+
+        device.connect()
+          .then(dev => dev.requestMTU(128))
+          .then(dev => dev.discoverAllServicesAndCharacteristics())
+          .then(dev => {
+            setNodeStatus(NODES.GAIT_LEFT.id, 'connected');
+
+            deviceSubscriptions[NODES.GAIT_LEFT.id] = deviceSubscriptions[NODES.GAIT_LEFT.id] || {};
+            deviceSubscriptions[NODES.GAIT_LEFT.id].disconnect = dev.onDisconnected(() => {
+              handleNodeDisconnected(NODES.GAIT_LEFT.id);
+            });
+
+            deviceSubscriptions[NODES.GAIT_LEFT.id].monitor = dev.monitorCharacteristicForService(NODES.GAIT_LEFT.serviceUUID, NODES.GAIT_LEFT.charUUID, (err, char) => {
+              if (err) {
+                handleNodeDisconnected(NODES.GAIT_LEFT.id);
+                return;
+              }
+              if (char?.value) {
+                const buf = Buffer.from(char.value, 'base64');
+                if (buf.length === 46) {
+                   const pitch = buf.readFloatLE(4);
+                   const roll = buf.readFloatLE(8);
+                   const qI = buf.readFloatLE(12);
+                   const qJ = buf.readFloatLE(16);
+                   const qK = buf.readFloatLE(20);
+                   const qR = buf.readFloatLE(24);
+                   const yaw = quaternionToYawDegrees(qI, qJ, qK, qR);
+                   const heel = buf.readUInt16LE(28);
+                   const mid = buf.readUInt16LE(30);
+                   const toe = buf.readUInt16LE(32);
+
+                   updateGaitLeft({ pitch, roll, yaw, heel, mid, toe });
+
+                   pushChartSample('gaitLeft.pitch', pitch);
+                   pushChartSample('gaitLeft.roll', roll);
+                   pushChartSample('gaitLeft.yaw', yaw);
+                   pushChartSample('gaitLeft.heel', heel);
+                   pushChartSample('gaitLeft.mid', mid);
+                   pushChartSample('gaitLeft.toe', toe);
+                }
+              }
+            });
+          })
+          .catch(() => {
+            lastDisconnectTime[NODES.GAIT_LEFT.id] = Date.now();
+            setNodeStatus(NODES.GAIT_LEFT.id, 'disconnected');
           });
       }
 
@@ -333,7 +412,10 @@ const orchestratorTask = async (taskDataArguments: any) => {
                      // Empty fields keep column count/order aligned with CSV_HEADER: Wall_Clock_ISO and
                      // GPS/weather weren't sampled at the time this reading was originally taken (only the
                      // ESP32's own counter is available, captured in the [OFFLINE_...] marker itself).
-                     const historicalRow = `[OFFLINE_${timestamp}],,,,,,,${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${fusedVolumeML.toFixed(1)},${weightGrams.toFixed(1)},${capVolumeML.toFixed(1)},${environment.temp},${environment.humidity}`;
+                     // Left-foot gait, like right-foot gait/posture above, uses whatever the node
+                     // currently reads rather than an empty placeholder, matching the existing pattern.
+                     const historicalGaitLeft = useSensorStore.getState().gaitLeft;
+                     const historicalRow = `[OFFLINE_${timestamp}],,,,,,,${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${fusedVolumeML.toFixed(1)},${weightGrams.toFixed(1)},${capVolumeML.toFixed(1)},${environment.temp},${environment.humidity},${historicalGaitLeft.pitch.toFixed(2)},${historicalGaitLeft.roll.toFixed(2)},${historicalGaitLeft.yaw.toFixed(2)},${historicalGaitLeft.heel},${historicalGaitLeft.mid},${historicalGaitLeft.toe}`;
                      csvBuffer.push(historicalRow); // Force it straight into the CSV memory!
                   }
                   // Note: burst-replayed (offline) samples are intentionally not charted —

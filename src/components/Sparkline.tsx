@@ -3,14 +3,20 @@ import { View, StyleSheet } from 'react-native';
 import { useChartStore } from '../store/ChartStore';
 
 interface SparklineProps {
-  metricKey: string;
+  // Live mode: reads a rolling buffer from useChartStore by key.
+  metricKey?: string;
+  // Static mode: renders this array directly instead (e.g. values parsed from a saved file),
+  // bypassing useChartStore entirely. Takes precedence over metricKey when provided.
+  data?: number[];
   width?: number;
   height?: number;
   color?: string;
 }
 
-const SparklineImpl = ({ metricKey, width = 80, height = 24, color = '#2b6cb0' }: SparklineProps) => {
-  const data = useChartStore((state) => state.history[metricKey]);
+const SparklineImpl = ({ metricKey, data: staticData, width = 80, height = 24, color = '#2b6cb0' }: SparklineProps) => {
+  // Hook is always called (rules of hooks) even in static mode; the store lookup is just unused then.
+  const liveData = useChartStore((state) => (metricKey ? state.history[metricKey] : undefined));
+  const data = staticData ?? liveData;
 
   if (!data || data.length < 2) {
     return <View style={[styles.container, { width, height }]} />;

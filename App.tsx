@@ -2,17 +2,29 @@ import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, TextInput, ScrollView, Switch, Alert, Modal, FlatList, ActivityIndicator } from 'react-native';
 import { useSensorStore } from './src/store/SensorStore';
 import { useLocationStore } from './src/store/LocationStore';
+import { useFitStore } from './src/store/FitStore';
 import { startBackgroundOrchestrator, startRecordingSession, stopRecordingSession, setGpsTrackingLive, sendHydrationCommand } from './src/services/BackgroundOrchestrator';
+import {
+  initializeHealthConnect,
+  requestFitPermissions,
+  startFitAutoSync,
+  restartFitAutoSync,
+  openHealthConnectSettings,
+  DAILY_TOTAL_TYPE_IDS,
+} from './src/services/HealthConnectService';
 import { NODES } from './src/config/NodeRegistry';
+import { HEALTH_DATA_TYPES } from './src/config/HealthConnectRegistry';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
 import { Sparkline } from './src/components/Sparkline';
 import { SessionManagerScreen } from './src/screens/SessionManagerScreen';
 import { MapScreen } from './src/screens/MapScreen';
+import { FitDataManagerScreen } from './src/screens/FitDataManagerScreen';
 
 const scannerManager = new BleManager();
 const NODE_LIST = Object.values(NODES) as Array<{ id: string; name: string }>;
 const NODES_BY_ID = NODES as Record<string, { id: string; name: string }>;
+const SYNC_INTERVAL_PRESETS = [5, 10, 15];
 
 const isValidNumber = (s: string) => {
   const trimmed = s.trim();
@@ -27,10 +39,19 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   reconnecting: { color: '#F59E0B', label: '🟠 Reconnecting…' },
 };
 
+const timeAgo = (iso: string): string => {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  return `${Math.floor(mins / 60)} hr ago`;
+};
+
+const formatMin = (m: number | undefined): string => `${Math.round(m ?? 0)}m`;
+
 export default function App() {
   const {
     activeInterests, nodeStatus, isRecording, isSyncing, fileName, nodeBindings,
-    gait, posture, hydration, environment,
+    gait, gaitLeft, posture, hydration, environment,
     addInterest, removeInterest, setFileName, bindNode, loadBindings
   } = useSensorStore();
 
@@ -54,9 +75,21 @@ export default function App() {
   const { gpsTrackingEnabled, locationError } = useLocationStore();
   const [isMapVisible, setMapVisible] = useState(false);
 
+  // Fit tab / Health Connect
+  const [activeTab, setActiveTab] = useState<'sensors' | 'fit'>('sensors');
+  const [isFitManagerVisible, setFitManagerVisible] = useState(false);
+  const [hcStatus, setHcStatus] = useState<{ available: boolean; reason?: string } | null>(null);
+  const {
+    permissionsGranted, latestByType, dailyTotals, lastCheckedByType, isSyncing: isFitSyncing, lastSyncAt, lastSyncError,
+    autoSyncEnabled, syncIntervalMinutes, fitFileNameOverride,
+    setAutoSyncEnabled, setSyncIntervalMinutes, setFitFileNameOverride, loadFitSettings,
+  } = useFitStore();
+
   useEffect(() => {
     const bootSequence = async () => {
       await loadBindings(); // Load saved MAC addresses from yesterday
+      await loadFitSettings();
+
       if (Platform.OS === 'android') {
         try {
           const granted = await PermissionsAndroid.requestMultiple([
@@ -80,6 +113,18 @@ export default function App() {
           }
         } catch (e) {
           console.error("Boot failed:", e);
+        }
+
+        try {
+          const result = await initializeHealthConnect();
+          setHcStatus(result);
+          if (result.available) {
+            const granted = await requestFitPermissions();
+            if (granted) startFitAutoSync();
+          }
+        } catch (e) {
+          console.error("Health Connect boot failed:", e);
+          setHcStatus({ available: false, reason: 'Failed to initialize Health Connect.' });
         }
       }
     };
@@ -227,6 +272,19 @@ export default function App() {
         </View>
       )}
 
+      {/* TAB BAR */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity style={styles.tabButton} onPress={() => setActiveTab('sensors')}>
+          <Text style={[styles.tabButtonText, activeTab === 'sensors' && styles.tabButtonTextActive]}>Sensors</Text>
+          {activeTab === 'sensors' && <View style={styles.tabIndicator} />}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.tabButton} onPress={() => setActiveTab('fit')}>
+          <Text style={[styles.tabButtonText, activeTab === 'fit' && styles.tabButtonTextActive]}>Fit</Text>
+          {activeTab === 'fit' && <View style={styles.tabIndicator} />}
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'sensors' && (
       <ScrollView style={styles.scrollArea}>
         {/* CONNECTION POOL & BINDER */}
         <View style={styles.sectionCard}>
@@ -294,6 +352,44 @@ export default function App() {
               <Text style={styles.label}>Met5 FSR</Text>
               <Text style={styles.val}>{gait.toe}</Text>
               <Sparkline metricKey="gait.toe" color="#805ad5" />
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.dataCard}>
+          <Text style={styles.cardHeader}>Gait Analysis Node (Left Foot)</Text>
+          <View style={styles.grid}>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Pitch</Text>
+              <Text style={styles.val}>{gaitLeft.pitch.toFixed(1)}°</Text>
+              <Sparkline metricKey="gaitLeft.pitch" color="#2b6cb0" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Roll</Text>
+              <Text style={styles.val}>{gaitLeft.roll.toFixed(1)}°</Text>
+              <Sparkline metricKey="gaitLeft.roll" color="#2b6cb0" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Yaw</Text>
+              <Text style={styles.val}>{gaitLeft.yaw.toFixed(1)}°</Text>
+              <Sparkline metricKey="gaitLeft.yaw" color="#2b6cb0" />
+            </View>
+          </View>
+          <View style={styles.grid}>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Heel FSR</Text>
+              <Text style={styles.val}>{gaitLeft.heel}</Text>
+              <Sparkline metricKey="gaitLeft.heel" color="#805ad5" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Met1 FSR</Text>
+              <Text style={styles.val}>{gaitLeft.mid}</Text>
+              <Sparkline metricKey="gaitLeft.mid" color="#805ad5" />
+            </View>
+            <View style={styles.gridItem}>
+              <Text style={styles.label}>Met5 FSR</Text>
+              <Text style={styles.val}>{gaitLeft.toe}</Text>
+              <Sparkline metricKey="gaitLeft.toe" color="#805ad5" />
             </View>
           </View>
         </View>
@@ -434,6 +530,116 @@ export default function App() {
           <Text style={styles.footerLab}>MAIM LAB, RMEDU</Text>
         </View>
       </ScrollView>
+      )}
+
+      {activeTab === 'fit' && (
+      <ScrollView style={styles.scrollArea}>
+        {!hcStatus?.available && (
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>Health Connect Unavailable</Text>
+            <Text style={styles.gpsHint}>{hcStatus?.reason ?? 'Checking availability…'}</Text>
+            <TouchableOpacity style={styles.sessionManagerButton} onPress={() => openHealthConnectSettings()}>
+              <Text style={styles.sessionManagerButtonText}>Open Health Connect Settings</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {hcStatus?.available && permissionsGranted.length === 0 && (
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>No Permissions Granted</Text>
+            <Text style={styles.gpsHint}>Grant read access to fitness data in Health Connect to see it here.</Text>
+            <TouchableOpacity
+              style={styles.sessionManagerButton}
+              onPress={async () => {
+                const granted = await requestFitPermissions();
+                if (granted) startFitAutoSync();
+              }}
+            >
+              <Text style={styles.sessionManagerButtonText}>Grant Permissions</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {hcStatus?.available && permissionsGranted.length > 0 && (
+          <>
+            <View style={styles.sectionCard}>
+              <View style={styles.gpsToggleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>Auto Sync</Text>
+                  <Text style={styles.gpsHint}>
+                    {isFitSyncing ? 'Syncing…' : lastSyncAt ? `Last synced ${new Date(lastSyncAt).toLocaleTimeString()}` : 'Not yet synced'}
+                  </Text>
+                </View>
+                <Switch value={autoSyncEnabled} onValueChange={setAutoSyncEnabled} />
+              </View>
+              {lastSyncError && <Text style={styles.gpsError}>⚠ {lastSyncError}</Text>}
+
+              <View style={styles.inputRow}>
+                {SYNC_INTERVAL_PRESETS.map((min) => (
+                  <TouchableOpacity
+                    key={min}
+                    style={[styles.intervalPreset, syncIntervalMinutes === min && styles.intervalPresetActive]}
+                    onPress={async () => {
+                      await setSyncIntervalMinutes(min);
+                      restartFitAutoSync();
+                    }}
+                  >
+                    <Text style={[styles.intervalPresetText, syncIntervalMinutes === min && styles.intervalPresetTextActive]}>{min} min</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TextInput
+                style={styles.input}
+                value={fitFileNameOverride ?? ''}
+                onChangeText={(v) => setFitFileNameOverride(v.trim().length > 0 ? v : null)}
+                placeholder="Auto (today's date)"
+              />
+            </View>
+
+            <Text style={styles.sectionHeader}>Fitness Data</Text>
+            {HEALTH_DATA_TYPES.filter((t) => permissionsGranted.includes(t.id)).map((type) => {
+              const latest = latestByType[type.id];
+              const isDailyTotal = DAILY_TOTAL_TYPE_IDS.includes(type.id);
+              const displayValue = isDailyTotal ? dailyTotals[type.id] : latest;
+              const checkedAt = lastCheckedByType[type.id];
+
+              return (
+                <View key={type.id} style={styles.dataCard}>
+                  <Text style={styles.cardHeader}>{type.label}{isDailyTotal ? ' (Today)' : ''}</Text>
+                  <View style={styles.grid}>
+                    <View style={styles.gridItem}>
+                      <Text style={[styles.val, { color: type.color }]}>
+                        {displayValue?.value != null ? displayValue.value.toFixed(1) : '—'} {type.unit}
+                      </Text>
+
+                      {type.id === 'BLOOD_PRESSURE' && latest?.detail?.diastolic != null && (
+                        <Text style={styles.label}>Diastolic {latest.detail.diastolic.toFixed(0)} mmHg</Text>
+                      )}
+
+                      {type.id === 'SLEEP_SESSION' && latest?.detail && (
+                        <Text style={styles.label}>
+                          Deep {formatMin(latest.detail.deepMin)} · Light {formatMin(latest.detail.lightMin)} · REM {formatMin(latest.detail.remMin)} · Awake {formatMin(latest.detail.awakeMin)}
+                        </Text>
+                      )}
+
+                      <Text style={styles.gpsHint}>
+                        {checkedAt ? `Checked ${timeAgo(checkedAt)}` : 'Not yet checked'}
+                        {latest ? ` · Latest data from ${new Date(latest.timestamp).toLocaleTimeString()}` : ' · No data yet'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+
+            <TouchableOpacity style={styles.sessionManagerButton} onPress={() => setFitManagerVisible(true)}>
+              <Text style={styles.sessionManagerButtonText}>📁 Manage Fit Data</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </ScrollView>
+      )}
 
       {/* SCANNER MODAL */}
       <Modal visible={isModalVisible} animationType="slide" transparent={true}>
@@ -464,6 +670,7 @@ export default function App() {
 
       <SessionManagerScreen visible={isSessionManagerVisible} onClose={() => setSessionManagerVisible(false)} />
       <MapScreen visible={isMapVisible} onClose={() => setMapVisible(false)} />
+      <FitDataManagerScreen visible={isFitManagerVisible} onClose={() => setFitManagerVisible(false)} />
     </SafeAreaView>
   );
 }
@@ -504,6 +711,15 @@ const styles = StyleSheet.create({
   gpsToggleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   gpsHint: { fontSize: 11, color: '#a0aec0', marginTop: 2 },
   gpsError: { fontSize: 12, color: '#d69e2e', marginBottom: 10, fontWeight: '600' },
+  tabBar: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 12, marginBottom: 15, elevation: 2, overflow: 'hidden' },
+  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  tabButtonText: { fontSize: 14, fontWeight: '600', color: '#a0aec0' },
+  tabButtonTextActive: { color: '#2196F3' },
+  tabIndicator: { height: 3, width: '60%', backgroundColor: '#2196F3', borderRadius: 2, marginTop: 6 },
+  intervalPreset: { flex: 1, backgroundColor: '#e2e8f0', paddingVertical: 8, borderRadius: 8, alignItems: 'center', marginRight: 8 },
+  intervalPresetActive: { backgroundColor: '#2196F3' },
+  intervalPresetText: { fontSize: 12, fontWeight: 'bold', color: '#4a5568' },
+  intervalPresetTextActive: { color: '#fff' },
   inputRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   otaInput: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingHorizontal: 15, height: 45, marginRight: 10, fontSize: 15 },
   otaSendBtn: { backgroundColor: '#10B981', paddingHorizontal: 20, justifyContent: 'center', alignItems: 'center', borderRadius: 8 },

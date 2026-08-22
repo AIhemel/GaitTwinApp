@@ -12,6 +12,7 @@ interface SensorState {
   nodeBindings: Record<string, string | null>;
 
   gait: { pitch: number; roll: number; yaw: number; heel: number; mid: number; toe: number };
+  gaitLeft: { pitch: number; roll: number; yaw: number; heel: number; mid: number; toe: number };
   posture: { spineAngle: number };
   // --- UPDATED HYDRATION METRICS ---
   hydration: { weightGrams: number; capVolumeML: number; fusedVolumeML: number };
@@ -28,6 +29,7 @@ interface SensorState {
   loadBindings: () => Promise<void>;
 
   updateGait: (data: Partial<SensorState['gait']>) => void;
+  updateGaitLeft: (data: Partial<SensorState['gaitLeft']>) => void;
   updatePosture: (data: Partial<SensorState['posture']>) => void;
   updateHydration: (data: Partial<SensorState['hydration']>) => void;
   updateEnvironment: (data: Partial<SensorState['environment']>) => void;
@@ -35,13 +37,14 @@ interface SensorState {
 
 export const useSensorStore = create<SensorState>((set, get) => ({
   activeInterests: [],
-  nodeStatus: { GAIT: 'disconnected', POSTURE: 'disconnected', HYDRATION: 'disconnected', ENVIRONMENT: 'disconnected' },
+  nodeStatus: { GAIT: 'disconnected', GAIT_LEFT: 'disconnected', POSTURE: 'disconnected', HYDRATION: 'disconnected', ENVIRONMENT: 'disconnected' },
   isRecording: false,
-  isSyncing: false, 
+  isSyncing: false,
   fileName: 'DHT_Session_01',
-  nodeBindings: { GAIT: null, POSTURE: null, HYDRATION: null, ENVIRONMENT: null },
+  nodeBindings: { GAIT: null, GAIT_LEFT: null, POSTURE: null, HYDRATION: null, ENVIRONMENT: null },
 
   gait: { pitch: 0, roll: 0, yaw: 0, heel: 0, mid: 0, toe: 0 },
+  gaitLeft: { pitch: 0, roll: 0, yaw: 0, heel: 0, mid: 0, toe: 0 },
   posture: { spineAngle: 0 },
   // --- UPDATED HYDRATION INITIAL STATE ---
   hydration: { weightGrams: 0, capVolumeML: 0, fusedVolumeML: 0 },
@@ -66,6 +69,7 @@ export const useSensorStore = create<SensorState>((set, get) => ({
   },
 
   updateGait: (data) => set((state) => ({ gait: { ...state.gait, ...data } })),
+  updateGaitLeft: (data) => set((state) => ({ gaitLeft: { ...state.gaitLeft, ...data } })),
   updatePosture: (data) => set((state) => ({ posture: { ...state.posture, ...data } })),
   updateHydration: (data) => set((state) => ({ hydration: { ...state.hydration, ...data } })),
   updateEnvironment: (data) => set((state) => ({ environment: { ...state.environment, ...data } })),
