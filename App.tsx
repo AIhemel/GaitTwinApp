@@ -303,6 +303,10 @@ export default function App() {
                 <View style={{flex: 1}}>
                   <Text style={styles.nodeName}>{node.name}</Text>
                   <Text style={[styles.nodeStatus, { color: meta.color }]}>{meta.label}</Text>
+                  {/* Always visible (not just when unassigned/disconnected) so you can compare
+                      two nodes' bound MACs at a glance — e.g. to catch the same physical device
+                      accidentally bound to both a GAIT and a GAIT_LEFT slot. */}
+                  {macAddress && <Text style={styles.gpsHint}>{macAddress}</Text>}
                 </View>
 
                 <TouchableOpacity style={styles.bindButton} onPress={() => openScanner(node.id)}>

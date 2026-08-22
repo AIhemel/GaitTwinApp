@@ -49,8 +49,35 @@ const handleNodeDisconnected = (nodeId: string) => {
   useSensorStore.getState().setNodeStatus(nodeId, 'reconnecting' as NodeConnectionStatus);
 };
 
+// Android's Bluetooth stack generally serializes GATT operations (connect/MTU/service-discovery)
+// across ALL peripherals sharing the phone's single BLE radio — kicking off two nodes' connect()
+// sequences at the same instant (e.g. two gait shoes discovered in the same scan tick) makes both
+// compete for that one radio and both come up slowly instead of one being quick and the other
+// following shortly after. This flag serializes just the heavy connect+discover phase (not the
+// lightweight notification streaming that follows), so multiple nodes connect one after another
+// instead of fighting each other — the continuous scan naturally retries any node still waiting.
+let connectionInFlight = false;
+let connectionInFlightTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const beginConnectionAttempt = () => {
+  connectionInFlight = true;
+  if (connectionInFlightTimeout) clearTimeout(connectionInFlightTimeout);
+  // Safety valve: if a connect() sequence somehow never resolves or rejects, don't let it
+  // permanently block every other node's connection attempts forever.
+  connectionInFlightTimeout = setTimeout(() => { connectionInFlight = false; }, 15000);
+};
+
+const endConnectionAttempt = () => {
+  connectionInFlight = false;
+  if (connectionInFlightTimeout) {
+    clearTimeout(connectionInFlightTimeout);
+    connectionInFlightTimeout = null;
+  }
+};
+
 const canAttemptConnect = (nodeId: string, status: NodeConnectionStatus) => {
   if (status === 'connected' || status === 'connecting') return false;
+  if (connectionInFlight) return false;
   return Date.now() - (lastDisconnectTime[nodeId] || 0) > RECONNECT_COOLDOWN_MS;
 };
 
@@ -244,12 +271,14 @@ const orchestratorTask = async (taskDataArguments: any) => {
         canAttemptConnect(NODES.GAIT.id, nodeStatus[NODES.GAIT.id])
       ) {
         setNodeStatus(NODES.GAIT.id, 'connecting');
+        beginConnectionAttempt();
 
         device.connect()
           .then(dev => dev.requestMTU(128))
           .then(dev => dev.discoverAllServicesAndCharacteristics())
           .then(dev => {
             setNodeStatus(NODES.GAIT.id, 'connected');
+            endConnectionAttempt();
 
             deviceSubscriptions[NODES.GAIT.id] = deviceSubscriptions[NODES.GAIT.id] || {};
             deviceSubscriptions[NODES.GAIT.id].disconnect = dev.onDisconnected(() => {
@@ -292,6 +321,7 @@ const orchestratorTask = async (taskDataArguments: any) => {
           .catch(() => {
             lastDisconnectTime[NODES.GAIT.id] = Date.now();
             setNodeStatus(NODES.GAIT.id, 'disconnected');
+            endConnectionAttempt();
           });
       }
 
@@ -307,12 +337,14 @@ const orchestratorTask = async (taskDataArguments: any) => {
         canAttemptConnect(NODES.GAIT_LEFT.id, nodeStatus[NODES.GAIT_LEFT.id])
       ) {
         setNodeStatus(NODES.GAIT_LEFT.id, 'connecting');
+        beginConnectionAttempt();
 
         device.connect()
           .then(dev => dev.requestMTU(128))
           .then(dev => dev.discoverAllServicesAndCharacteristics())
           .then(dev => {
             setNodeStatus(NODES.GAIT_LEFT.id, 'connected');
+            endConnectionAttempt();
 
             deviceSubscriptions[NODES.GAIT_LEFT.id] = deviceSubscriptions[NODES.GAIT_LEFT.id] || {};
             deviceSubscriptions[NODES.GAIT_LEFT.id].disconnect = dev.onDisconnected(() => {
@@ -353,6 +385,7 @@ const orchestratorTask = async (taskDataArguments: any) => {
           .catch(() => {
             lastDisconnectTime[NODES.GAIT_LEFT.id] = Date.now();
             setNodeStatus(NODES.GAIT_LEFT.id, 'disconnected');
+            endConnectionAttempt();
           });
       }
 
@@ -365,12 +398,14 @@ const orchestratorTask = async (taskDataArguments: any) => {
         canAttemptConnect(NODES.HYDRATION.id, nodeStatus[NODES.HYDRATION.id])
       ) {
         setNodeStatus(NODES.HYDRATION.id, 'connecting');
+        beginConnectionAttempt();
 
         device.connect()
           .then(dev => dev.requestMTU(128))
           .then(dev => dev.discoverAllServicesAndCharacteristics())
           .then(dev => {
             setNodeStatus(NODES.HYDRATION.id, 'connected');
+            endConnectionAttempt();
 
             deviceSubscriptions[NODES.HYDRATION.id] = deviceSubscriptions[NODES.HYDRATION.id] || {};
             deviceSubscriptions[NODES.HYDRATION.id].disconnect = dev.onDisconnected(() => {
@@ -453,6 +488,7 @@ const orchestratorTask = async (taskDataArguments: any) => {
           .catch(() => {
             lastDisconnectTime[NODES.HYDRATION.id] = Date.now();
             setNodeStatus(NODES.HYDRATION.id, 'disconnected');
+            endConnectionAttempt();
           });
       }
 
