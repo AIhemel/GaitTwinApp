@@ -1,6 +1,7 @@
 import Geolocation from '@react-native-community/geolocation';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { useLocationStore } from '../store/LocationStore';
+import { sessionWriter, cell } from './SessionWriter';
 
 let watchId: number | null = null;
 
@@ -60,11 +61,13 @@ const maybeRefreshWeather = async (latitude: number, longitude: number) => {
   }
 };
 
-const recordPosition = (latitude: number, longitude: number, timestamp: number, speed: number | null) => {
+const recordPosition = (latitude: number, longitude: number, timestamp: number, speed: number | null, accuracy: number | null) => {
   const store = useLocationStore.getState();
   store.setCurrentPosition({ latitude, longitude, speedMps: speed });
 
   const { currentWeather } = store;
+  // gps.csv: one row per fix, stamped with the fix's own time (Unix ms), not the time it was logged.
+  sessionWriter.append('gps', `${timestamp},${latitude.toFixed(7)},${longitude.toFixed(7)},${cell(accuracy, 1)},${cell(speed, 2)},${cell(currentWeather.temperatureC, 1)},${cell(currentWeather.humidityPct, 1)}`);
   store.addTrackPoint({
     latitude,
     longitude,
@@ -99,7 +102,7 @@ export const startLocationTracking = async (): Promise<StartTrackingResult> => {
   // Grab an immediate fix so the map/CSV have a position right away, rather than waiting
   // for watchPosition's first (sometimes slow) callback.
   Geolocation.getCurrentPosition(
-    (position) => recordPosition(position.coords.latitude, position.coords.longitude, position.timestamp, position.coords.speed),
+    (position) => recordPosition(position.coords.latitude, position.coords.longitude, position.timestamp, position.coords.speed, position.coords.accuracy),
     (error) => {
       console.error('GPS initial fix error:', error);
       useLocationStore.getState().setLocationError(error?.message || 'Could not get an initial GPS fix.');
@@ -110,7 +113,7 @@ export const startLocationTracking = async (): Promise<StartTrackingResult> => {
   watchId = Geolocation.watchPosition(
     (position) => {
       useLocationStore.getState().setLocationError(null);
-      recordPosition(position.coords.latitude, position.coords.longitude, position.timestamp, position.coords.speed);
+      recordPosition(position.coords.latitude, position.coords.longitude, position.timestamp, position.coords.speed, position.coords.accuracy);
     },
     (error) => {
       console.error('GPS error:', error);

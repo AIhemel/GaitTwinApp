@@ -4,14 +4,19 @@ export const RING_CAPACITY = 60;
 
 interface ChartState {
   history: Record<string, number[]>;
-  pushSample: (key: string, value: number) => void;
+  // One store update for many metrics at once, so a UI tick doesn't notify every subscriber
+  // once per metric.
+  pushSamples: (samples: Record<string, number>) => void;
 }
 
-export const useChartStore = create<ChartState>((set, get) => ({
+export const useChartStore = create<ChartState>((set) => ({
   history: {},
-  pushSample: (key, value) => {
-    const arr = get().history[key] ?? [];
-    const next = arr.length >= RING_CAPACITY ? [...arr.slice(1), value] : [...arr, value];
-    set((state) => ({ history: { ...state.history, [key]: next } }));
-  },
+  pushSamples: (samples) => set((state) => {
+    const history = { ...state.history };
+    for (const [key, value] of Object.entries(samples)) {
+      const arr = history[key] ?? [];
+      history[key] = arr.length >= RING_CAPACITY ? [...arr.slice(1), value] : [...arr, value];
+    }
+    return { history };
+  }),
 }));

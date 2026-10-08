@@ -1,52 +1,266 @@
 import BackgroundJob from 'react-native-background-actions';
-import { BleManager, Subscription } from 'react-native-ble-plx';
+import { BleError, BleManager, ConnectionPriority, Device, Subscription } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 import RNFS from 'react-native-fs';
-import { useSensorStore, NodeConnectionStatus } from '../store/SensorStore';
+import { useSensorStore, NodeConnectionStatus, NodeStats, GaitReading } from '../store/SensorStore';
 import { useChartStore } from '../store/ChartStore';
 import { useLocationStore } from '../store/LocationStore';
 import { startLocationTracking, stopLocationTracking } from './LocationService';
-import { NODES } from '../config/NodeRegistry';
+import { NODES, NODE_LIST, NODES_BY_ID, NodeConfig } from '../config/NodeRegistry';
+import { ClockSync } from './ClockSync';
+import { sessionWriter, cell, STREAM_HEADERS } from './SessionWriter';
+import {
+  decodeGait, decodeHydration, decodeEnvironment, decodePosture, poseName,
+  encodePostureClock, POSTURE_SYNC_COMMAND,
+} from '../protocol/NodePackets';
 import pkg from '../../package.json';
 
 // --- FIX 1: Cast global to 'any' so TypeScript doesn't complain ---
 (globalThis as any).Buffer = Buffer;
 export const manager = new BleManager(); // Exported so App.tsx can use it for scanning
 
-// Time and location columns come first, deliberately, so "when and where" is always
-// visible at the start of the row without scrolling past the sensor columns.
-const CSV_HEADER = "System_MS,Wall_Clock_ISO,GPS_Lat,GPS_Lon,GPS_Speed_mps,Weather_Temp_C,Weather_Humidity_Pct,Gait_Pitch,Gait_Roll,Gait_Yaw,Gait_Heel,Gait_Mid,Gait_Toe,Posture_Spine,Hydro_Fused_mL,Hydro_Weight_g,Hydro_Cap_mL,Env_Temp,Env_Hum,Gait_Left_Pitch,Gait_Left_Roll,Gait_Left_Yaw,Gait_Left_Heel,Gait_Left_Mid,Gait_Left_Toe";
-const SESSION_DIR = `${RNFS.DownloadDirectoryPath}/GaitTwin`;
+// Data path (see SessionWriter for the file layout):
+//   BLE packet -> decode (NodePackets) -> timestamp -> one CSV row per packet
+//                                      -> module-level "latest" values -> 10 Hz UI pump -> store -> UI
+// Nothing here writes to the store per gait/hydration packet: two gait nodes produce ~200 packets/s,
+// and a store update per packet (re-rendering the whole app each time) is what froze and then
+// crashed the app. Environment (one packet per 10 s) and posture (per pose change) update it directly.
 
-let csvBuffer: string[] = [];
+sessionWriter.setErrorHandler((message) => useSensorStore.getState().setWriteError(message));
 
-// --- FIX 2: Use ReturnType<typeof setInterval> instead of NodeJS.Timeout ---
-let logTimer: ReturnType<typeof setInterval> | null = null;
-let saveTimer: ReturnType<typeof setInterval> | null = null;
+type GaitNodeId = 'GAIT' | 'GAIT_LEFT';
+type MillisNodeId = GaitNodeId | 'HYDRATION';
 
-// --- BURST SYNC REFS FOR HYDRATION ---
-let hydrationSyncBuffer: any[] = [];
-let hydrationSyncTimeout: ReturnType<typeof setTimeout> | null = null;
+// ClockSync for the nodes that stamp packets with millis() (see ClockSync.ts).
+const clocks: Record<MillisNodeId, ClockSync> = {
+  GAIT: new ClockSync(),
+  GAIT_LEFT: new ClockSync(),
+  HYDRATION: new ClockSync(30000), // 1 Hz node: a longer window to get enough samples
+};
+
+const latestGait: Record<GaitNodeId, GaitReading> = {
+  GAIT: { pitch: 0, roll: 0, yaw: 0, heel: 0, mid: 0, toe: 0 },
+  GAIT_LEFT: { pitch: 0, roll: 0, yaw: 0, heel: 0, mid: 0, toe: 0 },
+};
+let latestHydration = { weightGrams: 0, capVolumeML: 0, fusedVolumeML: 0 };
+const uiDirty = new Set<MillisNodeId>();
+const chartDirty = new Set<MillisNodeId>();
+
+const packetCount: Record<string, number> = {}; // since the last stats tick
+const totalPackets: Record<string, number> = {};
+const lastPacketAt: Record<string, number> = {};
+const countPacket = (nodeId: string, rxMs: number) => {
+  packetCount[nodeId] = (packetCount[nodeId] ?? 0) + 1;
+  totalPackets[nodeId] = (totalPackets[nodeId] ?? 0) + 1;
+  lastPacketAt[nodeId] = rxMs;
+};
+
+// --- events.csv: connects, disconnects, reboots, posture syncs — so a stretch with no data reads as
+// "node was away/asleep", not as a silent hole.
+const logEvent = (node: string, event: string, deviceMs?: number | null, utcMs?: number | null, detail = '') => {
+  sessionWriter.append('events', `${Date.now()},${node},${event},${cell(deviceMs)},${cell(utcMs)},${detail}`);
+};
+
+const sleep = (time: number) => new Promise<void>((resolve) => setTimeout(() => resolve(), time));
+
+// ==========================================
+// GAIT — both feet, ~100 packets/s each (the firmware notifies once per BNO080 report: rotation
+// vector and accelerometer, each 50 Hz, so consecutive packets from one foot repeat whichever half
+// didn't change). Every packet is logged as received.
+// ==========================================
+const GAIT_SIDE: Record<GaitNodeId, string> = { GAIT: 'R', GAIT_LEFT: 'L' };
+
+const onGaitPacket = (nodeId: GaitNodeId, value: string) => {
+  const rxMs = Date.now();
+  const p = decodeGait(Buffer.from(value, 'base64'));
+  if (!p) return;
+
+  const clock = clocks[nodeId];
+  if (clock.observe(p.deviceMs, rxMs) === 'reboot') logEvent(nodeId, 'reboot_detected', p.deviceMs);
+
+  const g = latestGait[nodeId];
+  g.pitch = p.pitch; g.roll = p.roll; g.yaw = p.yaw; g.heel = p.heel; g.mid = p.mid; g.toe = p.toe;
+  uiDirty.add(nodeId);
+  chartDirty.add(nodeId);
+  countPacket(nodeId, rxMs);
+
+  if (sessionWriter.isOpen) {
+    sessionWriter.append('gait', `${GAIT_SIDE[nodeId]},${rxMs},${p.deviceMs},${cell(clock.toUtc(p.deviceMs))},${p.pitch.toFixed(3)},${p.roll.toFixed(3)},${p.qI.toFixed(6)},${p.qJ.toFixed(6)},${p.qK.toFixed(6)},${p.qR.toFixed(6)},${p.yaw.toFixed(3)},${p.heel},${p.mid},${p.toe},${p.accX.toFixed(4)},${p.accY.toFixed(4)},${p.accZ.toFixed(4)}`);
+  }
+};
+
+// ==========================================
+// HYDRATION — after connecting, the bottle streams live at 1 Hz, then (after a 3 s grace period)
+// replays its offline log as a fast burst of old packets. Live packets feed ClockSync; offline ones
+// are timed with the offset learned from the live ones (same boot). The bottle has no boot counter,
+// so an offline packet newer than the latest live one must come from an earlier boot: its utc_ms is
+// left blank rather than guessed.
+// ==========================================
+const HYDRATION_BURST_GAP_MS = 200;
+const HYDRATION_OFFLINE_AGE_MS = 2000;
 let lastHydrationPacketTime = 0;
+let lastLiveHydrationDeviceMs: number | null = null;
+let hydrationBurstLast: typeof latestHydration | null = null;
+let hydrationSyncTimeout: ReturnType<typeof setTimeout> | null = null;
 
-// --- PER-NODE CONNECTION LIFECYCLE TRACKING ---
-const deviceSubscriptions: Record<string, { monitor?: Subscription; disconnect?: Subscription }> = {};
+const onHydrationPacket = (value: string) => {
+  const rxMs = Date.now();
+  const p = decodeHydration(Buffer.from(value, 'base64'));
+  if (!p) return;
+  const reading = { weightGrams: p.weightGrams, capVolumeML: p.capVolumeML, fusedVolumeML: p.fusedVolumeML };
+
+  const clock = clocks.HYDRATION;
+  const sinceLast = rxMs - lastHydrationPacketTime;
+  lastHydrationPacketTime = rxMs;
+  const offset = clock.offsetMs;
+  const age = offset === null ? 0 : rxMs - p.deviceMs - offset;
+  const offline = sinceLast < HYDRATION_BURST_GAP_MS || age > HYDRATION_OFFLINE_AGE_MS;
+
+  let utcMs: number | null;
+  if (offline) {
+    const earlierBoot = lastLiveHydrationDeviceMs !== null && p.deviceMs > lastLiveHydrationDeviceMs;
+    utcMs = earlierBoot ? null : clock.toUtc(p.deviceMs);
+    const store = useSensorStore.getState();
+    if (!store.isSyncing) store.setIsSyncing(true);
+    hydrationBurstLast = reading;
+  } else {
+    if (clock.observe(p.deviceMs, rxMs) === 'reboot') logEvent('HYDRATION', 'reboot_detected', p.deviceMs);
+    lastLiveHydrationDeviceMs = p.deviceMs;
+    utcMs = clock.toUtc(p.deviceMs);
+    latestHydration = reading;
+    uiDirty.add('HYDRATION');
+    chartDirty.add('HYDRATION'); // offline samples aren't charted: they'd be out of order
+  }
+  countPacket('HYDRATION', rxMs);
+
+  sessionWriter.append('hydration', `${rxMs},${p.deviceMs},${cell(utcMs)},${offline ? 1 : 0},${p.weightGrams.toFixed(2)},${p.capVolumeML.toFixed(2)},${p.fusedVolumeML.toFixed(2)}`);
+
+  // 500 ms without packets ends a burst; the UI then shows the last replayed value until the
+  // next live packet.
+  if (hydrationSyncTimeout) clearTimeout(hydrationSyncTimeout);
+  hydrationSyncTimeout = setTimeout(() => {
+    const store = useSensorStore.getState();
+    if (store.isSyncing) store.setIsSyncing(false);
+    if (hydrationBurstLast) {
+      latestHydration = hydrationBurstLast;
+      hydrationBurstLast = null;
+      uiDirty.add('HYDRATION');
+    }
+  }, 500);
+};
+
+// ==========================================
+// ENVIRONMENT — one 10 s average per packet, live only (nothing is stored on the node while
+// disconnected). The packet is sent the moment its window closes, so the phone receive time is
+// the window end, to within BLE latency — far tighter than the node's own GPS clock, which only
+// has whole seconds (that value is kept raw in device_utc_s).
+// ==========================================
+const onEnvironmentPacket = (value: string) => {
+  const rxMs = Date.now();
+  const e = decodeEnvironment(Buffer.from(value, 'base64'));
+  if (!e) return;
+  countPacket('ENVIRONMENT', rxMs);
+
+  sessionWriter.append('environment', `${rxMs},${cell(e.deviceUtcS)},${rxMs},${cell(e.co2, 1)},${cell(e.temperature, 2)},${cell(e.humidity, 2)},${e.pm1},${e.pm25},${e.pm10},${cell(e.dba, 1)},${cell(e.latitude, 6)},${cell(e.longitude, 6)}`);
+  useSensorStore.getState().updateEnvironment({
+    co2: e.co2, temp: e.temperature, humidity: e.humidity, pm1: e.pm1, pm25: e.pm25, pm10: e.pm10, dba: e.dba,
+    latitude: e.latitude, longitude: e.longitude, gpsClock: e.deviceUtcS !== null, receivedAt: rxMs,
+  });
+};
+
+// ==========================================
+// POSTURE CUSHION — one packet per committed pose change. Live packets are timed on arrival.
+// Events committed while no phone was connected sit in the cushion's queue (max 32) until the app
+// writes "sync"; those replayed packets carry the cushion's own clock (whole seconds, and it drifts
+// during deep sleep), or 0 if its clock was never set — they're flagged replayed in the CSV.
+// The app only asks for the queue while recording, so it isn't drained into nowhere.
+// ==========================================
+const POSTURE_REPLAY_AGE_MS = 5000; // a live packet's device time is within ~1-2 s of arrival
+const POSTURE_DRAIN_IDLE_MS = 1500; // the cushion sends queued events 150 ms apart
+let postureDrainUntil = 0;
+
+const onPosturePacket = (value: string) => {
+  const rxMs = Date.now();
+  const p = decodePosture(Buffer.from(value, 'base64'));
+  if (!p) return;
+  countPacket('POSTURE', rxMs);
+
+  // While draining the queue the cushion's loop is blocked, so no live event can interleave; a
+  // queued event with no timestamp is only recognisable by arriving inside that window.
+  const inDrain = rxMs < postureDrainUntil;
+  if (inDrain) postureDrainUntil = rxMs + POSTURE_DRAIN_IDLE_MS;
+  const deviceMs = p.deviceUtcS === null ? null : p.deviceUtcS * 1000;
+  const replayed = inDrain || (deviceMs !== null && rxMs - deviceMs > POSTURE_REPLAY_AGE_MS);
+  const utcMs = replayed ? deviceMs : rxMs;
+  const source = !replayed ? 'rx' : deviceMs !== null ? 'device' : '';
+
+  sessionWriter.append('posture', `${rxMs},${cell(p.deviceUtcS)},${cell(utcMs)},${source},${replayed ? 1 : 0},${p.pose},${poseName(p.pose)}`);
+  useSensorStore.getState().updatePosture({ pose: p.pose, eventUtcMs: utcMs, replayed });
+};
+
+const writeToNode = (deviceId: string, node: NodeConfig, base64: string) => {
+  if (!node.rxCharUUID) throw new Error(`${node.id} has no write characteristic`);
+  return manager.writeCharacteristicWithResponseForDevice(deviceId, node.serviceUUID, node.rxCharUUID, base64);
+};
+
+// The cushion's clock only takes whole seconds (it sets tv_usec = 0), so the write is aligned to a
+// second boundary — otherwise it would run up to 1 s behind for the rest of the session.
+const setPostureClock = async (deviceId: string) => {
+  await sleep(1000 - (Date.now() % 1000));
+  const epochS = Math.round(Date.now() / 1000);
+  await writeToNode(deviceId, NODES.POSTURE, encodePostureClock(epochS));
+  logEvent('POSTURE', 'clock_set', null, epochS * 1000);
+};
+
+const requestPostureSync = async (deviceId: string) => {
+  postureDrainUntil = Date.now() + 3000;
+  await writeToNode(deviceId, NODES.POSTURE, POSTURE_SYNC_COMMAND);
+  logEvent('POSTURE', 'sync_requested');
+};
+
+const preparePostureNode = async (deviceId: string) => {
+  try {
+    await setPostureClock(deviceId);
+    if (useSensorStore.getState().isRecording) await requestPostureSync(deviceId);
+  } catch (e) {
+    console.warn('[POSTURE] clock/sync write failed:', e);
+  }
+};
+
+const PACKET_HANDLERS: Record<string, (value: string) => void> = {
+  GAIT: (v) => onGaitPacket('GAIT', v),
+  GAIT_LEFT: (v) => onGaitPacket('GAIT_LEFT', v),
+  HYDRATION: onHydrationPacket,
+  ENVIRONMENT: onEnvironmentPacket,
+  POSTURE: onPosturePacket,
+};
+
+// ==========================================
+// CONNECTION LIFECYCLE (shared by every node)
+// ==========================================
+const deviceSubscriptions: Record<string, Subscription[]> = {};
 const lastDisconnectTime: Record<string, number> = {};
 const RECONNECT_COOLDOWN_MS = 3000;
 
 const clearNodeSubscriptions = (nodeId: string) => {
-  const subs = deviceSubscriptions[nodeId];
-  if (subs) {
-    subs.monitor?.remove();
-    subs.disconnect?.remove();
-    delete deviceSubscriptions[nodeId];
-  }
+  deviceSubscriptions[nodeId]?.forEach((s) => s.remove());
+  delete deviceSubscriptions[nodeId];
 };
 
-const handleNodeDisconnected = (nodeId: string) => {
-  lastDisconnectTime[nodeId] = Date.now();
-  clearNodeSubscriptions(nodeId);
-  useSensorStore.getState().setNodeStatus(nodeId, 'reconnecting' as NodeConnectionStatus);
+const handleNodeDisconnected = (node: NodeConfig, deviceId: string, status?: NodeConnectionStatus) => {
+  // The monitor error and onDisconnected usually both fire for one drop; handle it once.
+  if (!deviceSubscriptions[node.id]) return;
+  clearNodeSubscriptions(node.id);
+  lastDisconnectTime[node.id] = Date.now();
+  // A monitor error doesn't always mean the link is down; without this the node could sit in
+  // "reconnecting" while still connected, and every reconnect attempt would fail.
+  manager.cancelDeviceConnection(deviceId).catch(() => {});
+  const store = useSensorStore.getState();
+  store.setNodeStatus(node.id, status ?? (node.sleepsWhenIdle ? 'waiting' : 'reconnecting'));
+  // The cushion never reports EMPTY; it goes to sleep ~10 s after the seat empties, which is what
+  // this disconnect usually is. The pose is unknown from here until the next event.
+  if (node.id === 'POSTURE') store.updatePosture({ pose: null, eventUtcMs: null, replayed: false });
+  logEvent(node.id, 'disconnected');
 };
 
 // Android's Bluetooth stack generally serializes GATT operations (connect/MTU/service-discovery)
@@ -81,140 +295,198 @@ const canAttemptConnect = (nodeId: string, status: NodeConnectionStatus) => {
   return Date.now() - (lastDisconnectTime[nodeId] || 0) > RECONNECT_COOLDOWN_MS;
 };
 
-// --- CHART SAMPLE THROTTLING (4Hz, independent of the 20ms CSV clock) ---
-const CHART_THROTTLE_MS = 250;
-const lastChartPush: Record<string, number> = {};
-const pushChartSample = (key: string, value: number) => {
-  const now = Date.now();
-  if (now - (lastChartPush[key] || 0) >= CHART_THROTTLE_MS) {
-    lastChartPush[key] = now;
-    useChartStore.getState().pushSample(key, value);
-  }
+const connectNode = (node: NodeConfig, device: Device) => {
+  const { setNodeStatus } = useSensorStore.getState();
+  setNodeStatus(node.id, 'connecting');
+  beginConnectionAttempt();
+
+  device.connect()
+    .then(dev => dev.requestMTU(128)) // gait 46 B / env 34 B don't fit the default 20 B payload
+    .then(dev => dev.discoverAllServicesAndCharacteristics())
+    .then(dev => {
+      const subs: Subscription[] = [];
+      deviceSubscriptions[node.id] = subs;
+      subs.push(dev.onDisconnected(() => handleNodeDisconnected(node, dev.id)));
+
+      if (node.id in clocks) {
+        clocks[node.id as MillisNodeId].reset(); // the node may have rebooted while away
+      }
+      if (node.id === 'HYDRATION') lastLiveHydrationDeviceMs = null;
+      if (node.id === 'GAIT' || node.id === 'GAIT_LEFT') {
+        // Shorter connection interval: more airtime for ~100 packets/s and less per-packet
+        // latency jitter for ClockSync to filter out. Android-only; harmless elsewhere.
+        dev.requestConnectionPriority(ConnectionPriority.High).catch(() => {});
+      }
+
+      const handler = PACKET_HANDLERS[node.id];
+      subs.push(dev.monitorCharacteristicForService(node.serviceUUID, node.charUUID, (err, char) => {
+        if (err) {
+          handleNodeDisconnected(node, dev.id);
+          return;
+        }
+        if (char?.value) handler(char.value);
+      }));
+
+      setNodeStatus(node.id, 'connected');
+      endConnectionAttempt();
+      logEvent(node.id, 'connected');
+      if (node.id === 'POSTURE') preparePostureNode(dev.id);
+    })
+    .catch(() => {
+      clearNodeSubscriptions(node.id);
+      lastDisconnectTime[node.id] = Date.now();
+      manager.cancelDeviceConnection(device.id).catch(() => {});
+      setNodeStatus(node.id, node.sleepsWhenIdle ? 'waiting' : 'disconnected');
+      endConnectionAttempt();
+    });
 };
 
-// Both gait nodes' firmware transmits a full orientation quaternion (qI/qJ/qK/qR = x/y/z/w) but
-// no standalone yaw float, so yaw is derived here rather than read off the wire. This is the
-// standard ZYX-Euler yaw extraction for an (x,y,z,w) quaternion — not independently verified
-// against this specific BNO08x mounting's exact axis convention, so sanity-check it against a
-// known physical rotation (e.g. turning the foot ~90° should move this by ~90°) before trusting
-// it for analysis; if it's off, the fix is almost certainly a sign flip or swapped axis here, not
-// a decode-offset problem.
-const quaternionToYawDegrees = (qI: number, qJ: number, qK: number, qR: number): number => {
-  const yawRad = Math.atan2(2 * (qR * qK + qI * qJ), 1 - 2 * (qJ * qJ + qK * qK));
-  return yawRad * (180 / Math.PI);
-};
-
-const sleep = (time: number) => new Promise<void>((resolve) => setTimeout(() => resolve(), time));
-
-const ensureSessionDir = async () => {
-  const exists = await RNFS.exists(SESSION_DIR);
-  if (!exists) await RNFS.mkdir(SESSION_DIR);
-};
-
-const readFirstLine = async (path: string): Promise<string | null> => {
-  try {
-    const chunk = await RNFS.read(path, 4096, 0, 'utf8');
-    const newlineIndex = chunk.indexOf('\n');
-    return (newlineIndex >= 0 ? chunk.slice(0, newlineIndex) : chunk).replace(/\r$/, '');
-  } catch {
-    return null;
-  }
-};
-
-// --- 1. THE SYNCHRONOUS LOGGER (50Hz) ---
-const startMasterClock = () => {
-  if (logTimer) return;
-
-  csvBuffer = [];
-  const startTime = Date.now();
-
-  logTimer = setInterval(() => {
-    const store = useSensorStore.getState();
-    if (!store.isRecording) return;
-
-    const t = Date.now() - startTime;
-    const { gait, gaitLeft, posture, hydration, environment } = store;
-    const { currentPosition, currentWeather } = useLocationStore.getState();
-
-    const lat = currentPosition ? currentPosition.latitude.toFixed(6) : '';
-    const lon = currentPosition ? currentPosition.longitude.toFixed(6) : '';
-    const speed = currentPosition?.speedMps != null ? currentPosition.speedMps.toFixed(2) : '';
-    const weatherTemp = currentWeather.temperatureC != null ? currentWeather.temperatureC.toFixed(1) : '';
-    const weatherHumidity = currentWeather.humidityPct != null ? currentWeather.humidityPct.toFixed(1) : '';
-
-    const wallClock = new Date().toISOString();
-
-    // Column order must always match CSV_HEADER exactly.
-    const row = `${t},${wallClock},${lat},${lon},${speed},${weatherTemp},${weatherHumidity},${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${hydration.fusedVolumeML.toFixed(1)},${hydration.weightGrams.toFixed(1)},${hydration.capVolumeML.toFixed(1)},${environment.temp},${environment.humidity},${gaitLeft.pitch.toFixed(2)},${gaitLeft.roll.toFixed(2)},${gaitLeft.yaw.toFixed(2)},${gaitLeft.heel},${gaitLeft.mid},${gaitLeft.toe}`;
-    csvBuffer.push(row);
-  }, 20);
-
-  saveTimer = setInterval(async () => {
-    if (csvBuffer.length === 0) return;
-
-    // Take a reference and swap in a fresh buffer *before* awaiting, so rows logged
-    // during the write aren't lost, but don't discard `pending` until the write succeeds.
-    const pending = csvBuffer;
-    csvBuffer = [];
-
-    const dataToSave = pending.join('\n') + '\n';
-    const currentFileName = useSensorStore.getState().fileName || 'DHT_Master_Log';
-    const path = `${SESSION_DIR}/${currentFileName}.csv`;
-
-    try {
-      await ensureSessionDir();
-      await RNFS.appendFile(path, dataToSave, 'utf8');
-      await RNFS.scanFile(path); // Force Android MediaStore to index the file
-    } catch (e) {
-      console.error("FS Error:", e);
-      csvBuffer = pending.concat(csvBuffer); // don't lose data on a failed write
+const onScanResult = (error: BleError | null, device: Device | null) => {
+  if (error || !device) return;
+  const { activeInterests, nodeBindings, nodeStatus } = useSensorStore.getState();
+  for (const node of NODE_LIST) {
+    if (
+      device.id === nodeBindings[node.id] &&
+      activeInterests.includes(node.id) &&
+      canAttemptConnect(node.id, nodeStatus[node.id])
+    ) {
+      connectNode(node, device);
+      return;
     }
-  }, 5000);
+  }
+};
+
+// Switching a node off disconnects it, instead of leaving it streaming in the background.
+let interestWatcher: (() => void) | null = null;
+const watchInterestChanges = () => {
+  if (interestWatcher) return;
+  interestWatcher = useSensorStore.subscribe((state, prev) => {
+    if (state.activeInterests === prev.activeInterests) return;
+    for (const id of prev.activeInterests) {
+      const deviceId = state.nodeBindings[id];
+      if (state.activeInterests.includes(id) || !NODES_BY_ID[id]) continue;
+      if (deviceId) handleNodeDisconnected(NODES_BY_ID[id], deviceId, 'disconnected');
+      const status = useSensorStore.getState().nodeStatus[id];
+      if (status === 'reconnecting' || status === 'waiting') state.setNodeStatus(id, 'disconnected');
+    }
+  });
+};
+
+// ==========================================
+// UI PUMP: latest gait/hydration values -> store at 10 Hz, sparklines at 4 Hz, node stats at 1 Hz.
+// ==========================================
+const UI_PUMP_MS = 100;
+const CHART_INTERVAL_MS = 250;
+const STATS_INTERVAL_MS = 1000;
+let uiTimer: ReturnType<typeof setInterval> | null = null;
+
+const startUiPump = () => {
+  if (uiTimer) return;
+  let lastChart = 0;
+  let lastStats = Date.now();
+  let lastStatsJson = '';
+
+  uiTimer = setInterval(() => {
+    const now = Date.now();
+
+    if (uiDirty.size) {
+      useSensorStore.setState({
+        ...(uiDirty.has('GAIT') && { gait: { ...latestGait.GAIT } }),
+        ...(uiDirty.has('GAIT_LEFT') && { gaitLeft: { ...latestGait.GAIT_LEFT } }),
+        ...(uiDirty.has('HYDRATION') && { hydration: { ...latestHydration } }),
+      });
+      uiDirty.clear();
+    }
+
+    if (chartDirty.size && now - lastChart >= CHART_INTERVAL_MS) {
+      lastChart = now;
+      const samples: Record<string, number> = {};
+      for (const nodeId of ['GAIT', 'GAIT_LEFT'] as GaitNodeId[]) {
+        if (!chartDirty.has(nodeId)) continue;
+        const key = nodeId === 'GAIT' ? 'gait' : 'gaitLeft';
+        const g = latestGait[nodeId];
+        Object.assign(samples, {
+          [`${key}.pitch`]: g.pitch, [`${key}.roll`]: g.roll, [`${key}.yaw`]: g.yaw,
+          [`${key}.heel`]: g.heel, [`${key}.mid`]: g.mid, [`${key}.toe`]: g.toe,
+        });
+      }
+      if (chartDirty.has('HYDRATION')) {
+        Object.assign(samples, {
+          'hydration.fusedVolumeML': latestHydration.fusedVolumeML,
+          'hydration.weightGrams': latestHydration.weightGrams,
+          'hydration.capVolumeML': latestHydration.capVolumeML,
+        });
+      }
+      chartDirty.clear();
+      useChartStore.getState().pushSamples(samples);
+    }
+
+    if (now - lastStats >= STATS_INTERVAL_MS) {
+      const elapsedS = (now - lastStats) / 1000;
+      lastStats = now;
+      const stats: Record<string, NodeStats> = {};
+      for (const node of NODE_LIST) {
+        stats[node.id] = {
+          rateHz: Math.round((packetCount[node.id] ?? 0) / elapsedS),
+          syncLocked: clocks[node.id as MillisNodeId]?.locked ?? false,
+          packets: totalPackets[node.id] ?? 0,
+          lastPacketAt: lastPacketAt[node.id] ?? null,
+        };
+        packetCount[node.id] = 0;
+      }
+      const json = JSON.stringify(stats);
+      if (json !== lastStatsJson) {
+        lastStatsJson = json;
+        useSensorStore.getState().setNodeStats(stats);
+      }
+    }
+  }, UI_PUMP_MS);
+};
+
+// ==========================================
+// RECORDING SESSIONS
+// ==========================================
+let sessionName = '';
+let sessionStartedAt = new Date();
+
+const writeSessionMeta = async (dir: string, endTime?: Date) => {
+  const { nodeBindings, activeInterests } = useSensorStore.getState();
+  const clockSync = Object.fromEntries(
+    (Object.keys(clocks) as MillisNodeId[]).map((id) => [id, { offsetMs: clocks[id].offsetMs, samples: clocks[id].sampleCount }])
+  );
+  const meta = {
+    fileName: sessionName,
+    startTime: sessionStartedAt.toISOString(),
+    endTime: endTime ? endTime.toISOString() : null,
+    appVersion: pkg.version,
+    nodeBindings,
+    activeInterests,
+    timeBase:
+      'utc_ms and rx_ms are Unix epoch milliseconds on the phone clock; rx_ms is when the packet arrived. ' +
+      'Gait/hydration: utc_ms = device_ms (node millis) + a min-delay offset estimate (ClockSync); refit offline from rx_ms/device_ms if needed. ' +
+      'Environment: utc_ms = arrival = end of the 10 s averaging window; device_utc_s is the node\'s GPS clock (whole seconds). ' +
+      'Posture: utc_ms = when the pose was committed (held 10 s; onset is ~10 s earlier); live events use arrival time, replayed queue events the cushion clock (utc_source column).',
+    streams: STREAM_HEADERS,
+    ...(endTime && { clockSyncAtEnd: clockSync }),
+  };
+  try {
+    await RNFS.writeFile(`${dir}/session.meta.json`, JSON.stringify(meta, null, 2), 'utf8');
+  } catch (e) {
+    console.error("Session metadata write failed:", e);
+  }
 };
 
 // --- CALLED WHEN THE USER STARTS A RECORDING SESSION ---
 export const startRecordingSession = async (): Promise<{ gpsError?: string; renamedTo?: string }> => {
-  await ensureSessionDir();
-
   const store = useSensorStore.getState();
-  let fileName = store.fileName || 'DHT_Session';
-  let csvPath = `${SESSION_DIR}/${fileName}.csv`;
-  let metaPath = `${SESSION_DIR}/${fileName}.meta.json`;
+  const { dir, name, renamed } = await sessionWriter.open(store.fileName.trim() || 'DHT_Session');
+  if (renamed) store.setFileName(name);
+  sessionName = name;
+  sessionStartedAt = new Date();
+  await writeSessionMeta(dir);
 
-  let needsHeader = !(await RNFS.exists(csvPath));
-  let renamedTo: string | undefined;
-
-  if (!needsHeader) {
-    // A file with this name already exists. Only safe to keep appending to it if its header
-    // still matches the current column layout — otherwise every row we add would be shifted
-    // relative to the old header (exactly the corruption this check exists to prevent).
-    const existingHeader = await readFirstLine(csvPath);
-    if (existingHeader !== CSV_HEADER) {
-      const suffix = new Date().toISOString().replace(/[:.]/g, '-');
-      fileName = `${fileName}_${suffix}`;
-      csvPath = `${SESSION_DIR}/${fileName}.csv`;
-      metaPath = `${SESSION_DIR}/${fileName}.meta.json`;
-      store.setFileName(fileName);
-      needsHeader = true;
-      renamedTo = fileName;
-    }
-  }
-
-  if (needsHeader) {
-    csvBuffer.push(CSV_HEADER);
-
-    const meta = {
-      fileName,
-      startTime: new Date().toISOString(),
-      appVersion: pkg.version,
-      nodeBindings: store.nodeBindings,
-    };
-    try {
-      await RNFS.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
-    } catch (e) {
-      console.error("Session metadata write failed:", e);
-    }
-  }
+  logEvent('APP', 'session_start');
+  for (const id of store.activeInterests) logEvent(id, `status_at_start_${store.nodeStatus[id] ?? 'disconnected'}`);
 
   let gpsError: string | undefined;
   if (useLocationStore.getState().gpsTrackingEnabled) {
@@ -224,13 +496,23 @@ export const startRecordingSession = async (): Promise<{ gpsError?: string; rena
   }
 
   store.setRecording(true);
-  return { gpsError, renamedTo };
+
+  // Collect pose changes the cushion queued while no phone was listening.
+  const postureId = store.nodeBindings.POSTURE;
+  if (postureId && store.nodeStatus.POSTURE === 'connected') {
+    requestPostureSync(postureId).catch((e) => console.warn('[POSTURE] sync failed:', e));
+  }
+  return { gpsError, renamedTo: renamed ? name : undefined };
 };
 
 // --- CALLED WHEN THE USER STOPS A RECORDING SESSION ---
-export const stopRecordingSession = () => {
+export const stopRecordingSession = async () => {
   stopLocationTracking();
   useSensorStore.getState().setRecording(false);
+  logEvent('APP', 'session_stop');
+  const dir = sessionWriter.sessionDir;
+  if (dir) await writeSessionMeta(dir, new Date());
+  await sessionWriter.close();
 };
 
 // --- CALLED WHEN THE USER FLIPS THE GPS TRACKING SWITCH ---
@@ -250,259 +532,18 @@ export const setGpsTrackingLive = async (enabled: boolean): Promise<{ gpsError?:
   return {};
 };
 
-// --- 2. THE BLE CONNECTION MANAGER ---
-const orchestratorTask = async (taskDataArguments: any) => {
-  startMasterClock();
+// --- THE BACKGROUND TASK ---
+const orchestratorTask = async () => {
+  startUiPump();
+  watchInterestChanges();
+  manager.startDeviceScan(null, null, onScanResult);
 
-  // The infinite background loop
-  await new Promise<void>(async (resolve) => {
-    manager.startDeviceScan(null, null, (error, device) => {
-      if (error || !device) return;
-
-      const store = useSensorStore.getState();
-      const { activeInterests, nodeBindings, nodeStatus, setNodeStatus, updateGait, updateGaitLeft, updateHydration } = store;
-
-      // ==========================================
-      // NODE 1: GAIT ANALYSIS (46-Byte Payload - KEPT EXACTLY AS YOU HAD IT)
-      // ==========================================
-      if (
-        device.id === nodeBindings.GAIT &&
-        activeInterests.includes(NODES.GAIT.id) &&
-        canAttemptConnect(NODES.GAIT.id, nodeStatus[NODES.GAIT.id])
-      ) {
-        setNodeStatus(NODES.GAIT.id, 'connecting');
-        beginConnectionAttempt();
-
-        device.connect()
-          .then(dev => dev.requestMTU(128))
-          .then(dev => dev.discoverAllServicesAndCharacteristics())
-          .then(dev => {
-            setNodeStatus(NODES.GAIT.id, 'connected');
-            endConnectionAttempt();
-
-            deviceSubscriptions[NODES.GAIT.id] = deviceSubscriptions[NODES.GAIT.id] || {};
-            deviceSubscriptions[NODES.GAIT.id].disconnect = dev.onDisconnected(() => {
-              handleNodeDisconnected(NODES.GAIT.id);
-            });
-
-            deviceSubscriptions[NODES.GAIT.id].monitor = dev.monitorCharacteristicForService(NODES.GAIT.serviceUUID, NODES.GAIT.charUUID, (err, char) => {
-              if (err) {
-                handleNodeDisconnected(NODES.GAIT.id);
-                return;
-              }
-              if (char?.value) {
-                const buf = Buffer.from(char.value, 'base64');
-                if (buf.length === 46) {
-                   const pitch = buf.readFloatLE(4);
-                   const roll = buf.readFloatLE(8);
-                   // Offset 12 is the start of the orientation quaternion (qI/qJ/qK/qR), not a
-                   // standalone yaw float — see quaternionToYawDegrees for why yaw is derived here.
-                   const qI = buf.readFloatLE(12);
-                   const qJ = buf.readFloatLE(16);
-                   const qK = buf.readFloatLE(20);
-                   const qR = buf.readFloatLE(24);
-                   const yaw = quaternionToYawDegrees(qI, qJ, qK, qR);
-                   const heel = buf.readUInt16LE(28);
-                   const mid = buf.readUInt16LE(30);
-                   const toe = buf.readUInt16LE(32);
-
-                   updateGait({ pitch, roll, yaw, heel, mid, toe });
-
-                   pushChartSample('gait.pitch', pitch);
-                   pushChartSample('gait.roll', roll);
-                   pushChartSample('gait.yaw', yaw);
-                   pushChartSample('gait.heel', heel);
-                   pushChartSample('gait.mid', mid);
-                   pushChartSample('gait.toe', toe);
-                }
-              }
-            });
-          })
-          .catch(() => {
-            lastDisconnectTime[NODES.GAIT.id] = Date.now();
-            setNodeStatus(NODES.GAIT.id, 'disconnected');
-            endConnectionAttempt();
-          });
-      }
-
-      // ==========================================
-      // NODE 1b: GAIT ANALYSIS - LEFT FOOT (46-Byte Payload)
-      // Identical byte layout to the right foot's GAIT node (same firmware, same struct): pitch@4,
-      // roll@8, quaternion qI/qJ/qK/qR@12-27, FSR uint16s at 28/30/32. Yaw is derived from the
-      // quaternion exactly as it is for the right foot — see quaternionToYawDegrees.
-      // ==========================================
-      if (
-        device.id === nodeBindings.GAIT_LEFT &&
-        activeInterests.includes(NODES.GAIT_LEFT.id) &&
-        canAttemptConnect(NODES.GAIT_LEFT.id, nodeStatus[NODES.GAIT_LEFT.id])
-      ) {
-        setNodeStatus(NODES.GAIT_LEFT.id, 'connecting');
-        beginConnectionAttempt();
-
-        device.connect()
-          .then(dev => dev.requestMTU(128))
-          .then(dev => dev.discoverAllServicesAndCharacteristics())
-          .then(dev => {
-            setNodeStatus(NODES.GAIT_LEFT.id, 'connected');
-            endConnectionAttempt();
-
-            deviceSubscriptions[NODES.GAIT_LEFT.id] = deviceSubscriptions[NODES.GAIT_LEFT.id] || {};
-            deviceSubscriptions[NODES.GAIT_LEFT.id].disconnect = dev.onDisconnected(() => {
-              handleNodeDisconnected(NODES.GAIT_LEFT.id);
-            });
-
-            deviceSubscriptions[NODES.GAIT_LEFT.id].monitor = dev.monitorCharacteristicForService(NODES.GAIT_LEFT.serviceUUID, NODES.GAIT_LEFT.charUUID, (err, char) => {
-              if (err) {
-                handleNodeDisconnected(NODES.GAIT_LEFT.id);
-                return;
-              }
-              if (char?.value) {
-                const buf = Buffer.from(char.value, 'base64');
-                if (buf.length === 46) {
-                   const pitch = buf.readFloatLE(4);
-                   const roll = buf.readFloatLE(8);
-                   const qI = buf.readFloatLE(12);
-                   const qJ = buf.readFloatLE(16);
-                   const qK = buf.readFloatLE(20);
-                   const qR = buf.readFloatLE(24);
-                   const yaw = quaternionToYawDegrees(qI, qJ, qK, qR);
-                   const heel = buf.readUInt16LE(28);
-                   const mid = buf.readUInt16LE(30);
-                   const toe = buf.readUInt16LE(32);
-
-                   updateGaitLeft({ pitch, roll, yaw, heel, mid, toe });
-
-                   pushChartSample('gaitLeft.pitch', pitch);
-                   pushChartSample('gaitLeft.roll', roll);
-                   pushChartSample('gaitLeft.yaw', yaw);
-                   pushChartSample('gaitLeft.heel', heel);
-                   pushChartSample('gaitLeft.mid', mid);
-                   pushChartSample('gaitLeft.toe', toe);
-                }
-              }
-            });
-          })
-          .catch(() => {
-            lastDisconnectTime[NODES.GAIT_LEFT.id] = Date.now();
-            setNodeStatus(NODES.GAIT_LEFT.id, 'disconnected');
-            endConnectionAttempt();
-          });
-      }
-
-      // ==========================================
-      // NODE 2: HYDRATION (16-Byte Payload + Direct-To-Disk Injection)
-      // ==========================================
-      if (
-        device.id === nodeBindings.HYDRATION &&
-        activeInterests.includes(NODES.HYDRATION.id) &&
-        canAttemptConnect(NODES.HYDRATION.id, nodeStatus[NODES.HYDRATION.id])
-      ) {
-        setNodeStatus(NODES.HYDRATION.id, 'connecting');
-        beginConnectionAttempt();
-
-        device.connect()
-          .then(dev => dev.requestMTU(128))
-          .then(dev => dev.discoverAllServicesAndCharacteristics())
-          .then(dev => {
-            setNodeStatus(NODES.HYDRATION.id, 'connected');
-            endConnectionAttempt();
-
-            deviceSubscriptions[NODES.HYDRATION.id] = deviceSubscriptions[NODES.HYDRATION.id] || {};
-            deviceSubscriptions[NODES.HYDRATION.id].disconnect = dev.onDisconnected(() => {
-              handleNodeDisconnected(NODES.HYDRATION.id);
-            });
-
-            deviceSubscriptions[NODES.HYDRATION.id].monitor = dev.monitorCharacteristicForService(NODES.HYDRATION.serviceUUID, NODES.HYDRATION.charUUID, (err, char) => {
-              if (err) {
-                handleNodeDisconnected(NODES.HYDRATION.id);
-                return;
-              }
-              if (char?.value) {
-                const buf = Buffer.from(char.value, 'base64');
-
-                // UPGRADE: Now cracks the 16-byte payload
-                if (buf.length !== 16) return;
-
-                const timestamp = buf.readUInt32LE(0);
-                const weightGrams = buf.readFloatLE(4);
-                const capVolumeML = buf.readFloatLE(8);
-                const fusedVolumeML = buf.readFloatLE(12);
-
-                const now = Date.now();
-                const timeSinceLastPacket = now - lastHydrationPacketTime;
-                lastHydrationPacketTime = now;
-
-                // BURST DETECTION (< 200ms)
-                if (timeSinceLastPacket < 200) {
-                  if (useSensorStore.getState().setIsSyncing) {
-                    useSensorStore.getState().setIsSyncing(true);
-                  }
-
-                  // Push to UI background buffer
-                  hydrationSyncBuffer.push({ weightGrams, capVolumeML, fusedVolumeML });
-
-                  // UPGRADE: DIRECT-TO-DISK INJECTION (Fixes the data loss bug)
-                  if (useSensorStore.getState().isRecording) {
-                     const { gait, posture, environment } = useSensorStore.getState();
-                     // Empty fields keep column count/order aligned with CSV_HEADER: Wall_Clock_ISO and
-                     // GPS/weather weren't sampled at the time this reading was originally taken (only the
-                     // ESP32's own counter is available, captured in the [OFFLINE_...] marker itself).
-                     // Left-foot gait, like right-foot gait/posture above, uses whatever the node
-                     // currently reads rather than an empty placeholder, matching the existing pattern.
-                     const historicalGaitLeft = useSensorStore.getState().gaitLeft;
-                     const historicalRow = `[OFFLINE_${timestamp}],,,,,,,${gait.pitch.toFixed(2)},${gait.roll.toFixed(2)},${gait.yaw.toFixed(2)},${gait.heel},${gait.mid},${gait.toe},${posture.spineAngle},${fusedVolumeML.toFixed(1)},${weightGrams.toFixed(1)},${capVolumeML.toFixed(1)},${environment.temp},${environment.humidity},${historicalGaitLeft.pitch.toFixed(2)},${historicalGaitLeft.roll.toFixed(2)},${historicalGaitLeft.yaw.toFixed(2)},${historicalGaitLeft.heel},${historicalGaitLeft.mid},${historicalGaitLeft.toe}`;
-                     csvBuffer.push(historicalRow); // Force it straight into the CSV memory!
-                  }
-                  // Note: burst-replayed (offline) samples are intentionally not charted —
-                  // they'd appear out of order against the live rolling trend.
-                } else {
-                  // Standard Live Packet
-                  updateHydration({ weightGrams, capVolumeML, fusedVolumeML });
-                  pushChartSample('hydration.fusedVolumeML', fusedVolumeML);
-                  pushChartSample('hydration.weightGrams', weightGrams);
-                  pushChartSample('hydration.capVolumeML', capVolumeML);
-                }
-
-                // AUTO-HEAL: If 500ms pass with no rapid packets, the flush is over
-                if (hydrationSyncTimeout) clearTimeout(hydrationSyncTimeout);
-                hydrationSyncTimeout = setTimeout(() => {
-                  const currentState = useSensorStore.getState();
-                  if (currentState.isSyncing && currentState.setIsSyncing) {
-                    currentState.setIsSyncing(false);
-
-                    // Update UI to the final packet of the burst
-                    if (hydrationSyncBuffer.length > 0) {
-                      const finalPacket = hydrationSyncBuffer[hydrationSyncBuffer.length - 1];
-                      updateHydration({
-                        weightGrams: finalPacket.weightGrams,
-                        capVolumeML: finalPacket.capVolumeML,
-                        fusedVolumeML: finalPacket.fusedVolumeML
-                      });
-                      hydrationSyncBuffer = [];
-                    }
-                  }
-                }, 500);
-              }
-            });
-          })
-          .catch(() => {
-            lastDisconnectTime[NODES.HYDRATION.id] = Date.now();
-            setNodeStatus(NODES.HYDRATION.id, 'disconnected');
-            endConnectionAttempt();
-          });
-      }
-
-      // (Future Posture and Environment nodes go here...)
-    });
-
-    // Keep the task alive forever
-    while (true) {
-      await sleep(1000);
-    }
-  });
+  // Keep the task (and so the foreground service) alive.
+  while (true) {
+    await sleep(1000);
+  }
 };
 
-// --- 3. EXPORT THE START COMMAND ---
 export const startBackgroundOrchestrator = async () => {
   const options = {
     taskName: 'WBAN_Orchestrator',
@@ -518,7 +559,7 @@ export const startBackgroundOrchestrator = async () => {
   }
 };
 
-// --- 4. TWO-WAY BLE COMMAND TRANSMITTER ---
+// --- TWO-WAY BLE COMMAND TRANSMITTER ---
 export const sendHydrationCommand = async (command: string): Promise<boolean> => {
   const store = useSensorStore.getState();
   const macAddress = store.nodeBindings.HYDRATION;
@@ -532,12 +573,7 @@ export const sendHydrationCommand = async (command: string): Promise<boolean> =>
   const base64Command = Buffer.from(command.trim(), 'utf-8').toString('base64');
 
   try {
-    await manager.writeCharacteristicWithResponseForDevice(
-      macAddress,
-      NODES.HYDRATION.serviceUUID,
-      NODES.HYDRATION.rxCharUUID,
-      base64Command
-    );
+    await writeToNode(macAddress, NODES.HYDRATION, base64Command);
     console.log(`[BLE TX SUCCESS] Sent Command: ${command}`);
     return true;
   } catch (error) {

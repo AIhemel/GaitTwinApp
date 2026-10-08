@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, View, Text, FlatList, TouchableOpacity, TextInput, Alert, StyleSheet } from 'react-native';
 import { listSessions, renameSession, deleteSession, SessionInfo } from '../services/SessionService';
+import { useSensorStore } from '../store/SensorStore';
 
 interface SessionManagerScreenProps {
   visible: boolean;
@@ -10,8 +11,12 @@ interface SessionManagerScreenProps {
 export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenProps) => {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
-  const [renamingFile, setRenamingFile] = useState<string | null>(null);
+  const [renamingFile, setRenamingFile] = useState<SessionInfo | null>(null);
   const [renameInput, setRenameInput] = useState('');
+  const isRecording = useSensorStore((state) => state.isRecording);
+  const activeFileName = useSensorStore((state) => state.fileName);
+  // The session being recorded is still being written to; renaming/deleting it would break that.
+  const isActive = (item: SessionInfo) => isRecording && !item.isLegacy && item.fileName === activeFileName;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -30,10 +35,12 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
     if (visible) refresh();
   }, [visible, refresh]);
 
-  const handleDelete = (fileName: string) => {
+  const handleDelete = (session: SessionInfo) => {
     Alert.alert(
       'Delete Session',
-      `Permanently delete "${fileName}.csv"? This cannot be undone.`,
+      session.isLegacy
+        ? `Permanently delete "${session.fileName}.csv"? This cannot be undone.`
+        : `Permanently delete the "${session.fileName}" folder and all its CSVs? This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -41,7 +48,7 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteSession(fileName);
+              await deleteSession(session);
               refresh();
             } catch {
               Alert.alert('Error', 'Could not delete this session.');
@@ -52,15 +59,15 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
     );
   };
 
-  const startRename = (fileName: string) => {
-    setRenamingFile(fileName);
-    setRenameInput(fileName);
+  const startRename = (session: SessionInfo) => {
+    setRenamingFile(session);
+    setRenameInput(session.fileName);
   };
 
   const confirmRename = async () => {
     if (!renamingFile) return;
     const newName = renameInput.trim();
-    if (!newName || newName === renamingFile) {
+    if (!newName || newName === renamingFile.fileName) {
       setRenamingFile(null);
       return;
     }
@@ -82,13 +89,13 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
 
           <FlatList
             data={sessions}
-            keyExtractor={(item) => item.fileName}
+            keyExtractor={(item) => item.path}
             refreshing={loading}
             onRefresh={refresh}
             ListEmptyComponent={<Text style={styles.empty}>No recorded sessions yet.</Text>}
             renderItem={({ item }) => (
               <View style={styles.sessionRow}>
-                {renamingFile === item.fileName ? (
+                {renamingFile?.path === item.path ? (
                   <View style={styles.renameRow}>
                     <TextInput
                       style={styles.renameInput}
@@ -106,7 +113,10 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
                 ) : (
                   <>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.fileName}>{item.fileName}.csv</Text>
+                      <Text style={styles.fileName}>{item.isLegacy ? `${item.fileName}.csv` : `${item.fileName}/`}</Text>
+                      {!item.isLegacy && (
+                        <Text style={styles.meta}>{item.streams.length ? item.streams.join(' · ') : 'no data yet'}</Text>
+                      )}
                       <Text style={styles.meta}>
                         {item.metadata?.startTime
                           ? new Date(item.metadata.startTime).toLocaleString()
@@ -114,13 +124,20 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
                         {' · '}{(item.size / 1024).toFixed(1)} KB
                       </Text>
                       {!item.metadata && <Text style={styles.metaWarning}>metadata unavailable</Text>}
+                      {item.isLegacy && <Text style={styles.metaWarning}>legacy single-file format</Text>}
                     </View>
-                    <TouchableOpacity style={styles.smallBtn} onPress={() => startRename(item.fileName)}>
-                      <Text style={styles.smallBtnText}>Rename</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.smallBtnDelete} onPress={() => handleDelete(item.fileName)}>
-                      <Text style={styles.smallBtnText}>Delete</Text>
-                    </TouchableOpacity>
+                    {isActive(item) ? (
+                      <Text style={styles.recordingTag}>● Recording</Text>
+                    ) : (
+                      <>
+                        <TouchableOpacity style={styles.smallBtn} onPress={() => startRename(item)}>
+                          <Text style={styles.smallBtnText}>Rename</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.smallBtnDelete} onPress={() => handleDelete(item)}>
+                          <Text style={styles.smallBtnText}>Delete</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
                   </>
                 )}
               </View>
@@ -146,6 +163,7 @@ const styles = StyleSheet.create({
   fileName: { fontSize: 15, fontWeight: '600', color: '#2d3748' },
   meta: { fontSize: 11, color: '#a0aec0', marginTop: 2 },
   metaWarning: { fontSize: 11, color: '#d69e2e', marginTop: 2 },
+  recordingTag: { fontSize: 12, fontWeight: 'bold', color: '#F44336', marginLeft: 8 },
   smallBtn: { backgroundColor: '#e2e8f0', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginLeft: 8 },
   smallBtnCancel: { backgroundColor: '#cbd5e1', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginLeft: 8 },
   smallBtnDelete: { backgroundColor: '#F44336', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginLeft: 8 },

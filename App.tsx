@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, TextInput, ScrollView, Switch, Alert, Modal, FlatList, ActivityIndicator } from 'react-native';
+import { useShallow } from 'zustand/react/shallow';
 import { useSensorStore } from './src/store/SensorStore';
 import { useLocationStore } from './src/store/LocationStore';
 import { useFitStore } from './src/store/FitStore';
@@ -12,18 +13,19 @@ import {
   openHealthConnectSettings,
   DAILY_TOTAL_TYPE_IDS,
 } from './src/services/HealthConnectService';
-import { NODES } from './src/config/NodeRegistry';
+import { NODE_LIST, NODES_BY_ID } from './src/config/NodeRegistry';
 import { HEALTH_DATA_TYPES } from './src/config/HealthConnectRegistry';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
-import { Sparkline } from './src/components/Sparkline';
+import { GaitCard, HydrationCard, PostureCard, EnvironmentCard, NodeStatsLine } from './src/components/NodeCards';
 import { SessionManagerScreen } from './src/screens/SessionManagerScreen';
 import { MapScreen } from './src/screens/MapScreen';
 import { FitDataManagerScreen } from './src/screens/FitDataManagerScreen';
 
 const scannerManager = new BleManager();
-const NODE_LIST = Object.values(NODES) as Array<{ id: string; name: string }>;
-const NODES_BY_ID = NODES as Record<string, { id: string; name: string }>;
+// The posture cushion deep-sleeps (stops advertising) whenever the seat is empty, so "not
+// connected" is its normal state and must not block or warn about recording.
+const expectsLink = (id: string) => !NODES_BY_ID[id]?.sleepsWhenIdle;
 const SYNC_INTERVAL_PRESETS = [5, 10, 15];
 
 const isValidNumber = (s: string) => {
@@ -37,6 +39,7 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   connected: { color: '#4CAF50', label: '🟢 Connected' },
   connecting: { color: '#F59E0B', label: '🟡 Connecting…' },
   reconnecting: { color: '#F59E0B', label: '🟠 Reconnecting…' },
+  waiting: { color: '#2196F3', label: '💤 Asleep (seat empty) or out of range' },
 };
 
 const timeAgo = (iso: string): string => {
@@ -49,11 +52,25 @@ const timeAgo = (iso: string): string => {
 const formatMin = (m: number | undefined): string => `${Math.round(m ?? 0)}m`;
 
 export default function App() {
+  // Only the fields App itself renders — live sensor values are read by the cards in
+  // NodeCards.tsx, so a sensor update re-renders one card, not this whole tree.
   const {
-    activeInterests, nodeStatus, isRecording, isSyncing, fileName, nodeBindings,
-    gait, gaitLeft, posture, hydration, environment,
+    activeInterests, nodeStatus, isRecording, isSyncing, writeError, fileName, nodeBindings,
     addInterest, removeInterest, setFileName, bindNode, loadBindings
-  } = useSensorStore();
+  } = useSensorStore(useShallow((state) => ({
+    activeInterests: state.activeInterests,
+    nodeStatus: state.nodeStatus,
+    isRecording: state.isRecording,
+    isSyncing: state.isSyncing,
+    writeError: state.writeError,
+    fileName: state.fileName,
+    nodeBindings: state.nodeBindings,
+    addInterest: state.addInterest,
+    removeInterest: state.removeInterest,
+    setFileName: state.setFileName,
+    bindNode: state.bindNode,
+    loadBindings: state.loadBindings,
+  })));
 
   // Scanner Modal States
   const [isModalVisible, setModalVisible] = useState(false);
@@ -72,7 +89,8 @@ export default function App() {
   const [isSessionManagerVisible, setSessionManagerVisible] = useState(false);
 
   // GPS / Map
-  const { gpsTrackingEnabled, locationError } = useLocationStore();
+  const gpsTrackingEnabled = useLocationStore((state) => state.gpsTrackingEnabled);
+  const locationError = useLocationStore((state) => state.locationError);
   const [isMapVisible, setMapVisible] = useState(false);
 
   // Fit tab / Health Connect
@@ -133,7 +151,7 @@ export default function App() {
     return () => {
       if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
     };
-  }, []);
+  }, [loadBindings, loadFitSettings]); // stable store actions: runs once
 
   const handleNodeToggle = (nodeId: string, isEnabled: boolean) => {
     if (isEnabled && !nodeBindings[nodeId]) {
@@ -207,7 +225,7 @@ export default function App() {
     if (!isRecording) {
       if (activeInterests.length === 0) return Alert.alert("Warning", "Activate a node first.");
 
-      const notLive = activeInterests.filter(id => nodeStatus[id] !== 'connected');
+      const notLive = activeInterests.filter(id => expectsLink(id) && nodeStatus[id] !== 'connected');
       if (notLive.length > 0) {
         const names = notLive.map(id => NODES_BY_ID[id]?.name ?? id).join(', ');
         Alert.alert(
@@ -222,8 +240,9 @@ export default function App() {
       }
       beginRecording();
     } else {
-      stopRecordingSession();
-      Alert.alert("Session Saved", `Data successfully written to Downloads/GaitTwin/${fileName}.csv`);
+      stopRecordingSession()
+        .then(() => Alert.alert("Session Saved", `Data written to Downloads/GaitTwin/${fileName}/ (one CSV per node).`))
+        .catch((e) => Alert.alert("Save Problem", `The session may be incomplete: ${String(e?.message ?? e)}`));
     }
   };
 
@@ -246,7 +265,7 @@ export default function App() {
   };
 
   const droppedWhileRecording = isRecording
-    ? activeInterests.filter(id => nodeStatus[id] !== 'connected')
+    ? activeInterests.filter(id => expectsLink(id) && nodeStatus[id] !== 'connected')
     : [];
 
   return (
@@ -267,8 +286,14 @@ export default function App() {
       {droppedWhileRecording.length > 0 && (
         <View style={styles.warnBanner}>
           <Text style={styles.warnText}>
-            ⚠ {droppedWhileRecording.map(id => NODES_BY_ID[id]?.name ?? id).join(', ')} disconnected — still recording (values may be stale)
+            ⚠ {droppedWhileRecording.map(id => NODES_BY_ID[id]?.name ?? id).join(', ')} disconnected — still recording; no rows are logged for it until it reconnects
           </Text>
+        </View>
+      )}
+
+      {writeError && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.warnText}>⚠ {writeError}</Text>
         </View>
       )}
 
@@ -307,6 +332,7 @@ export default function App() {
                       two nodes' bound MACs at a glance — e.g. to catch the same physical device
                       accidentally bound to both a GAIT and a GAIT_LEFT slot. */}
                   {macAddress && <Text style={styles.gpsHint}>{macAddress}</Text>}
+                  <NodeStatsLine nodeId={node.id} deviceClock={node.deviceClock} />
                 </View>
 
                 <TouchableOpacity style={styles.bindButton} onPress={() => openScanner(node.id)}>
@@ -322,112 +348,10 @@ export default function App() {
         {/* DATA CARDS */}
         <Text style={styles.sectionHeader}>Live Core Metrics</Text>
 
-        <View style={styles.dataCard}>
-          <Text style={styles.cardHeader}>Gait Analysis Node</Text>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Pitch</Text>
-              <Text style={styles.val}>{gait.pitch.toFixed(1)}°</Text>
-              <Sparkline metricKey="gait.pitch" color="#2b6cb0" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Roll</Text>
-              <Text style={styles.val}>{gait.roll.toFixed(1)}°</Text>
-              <Sparkline metricKey="gait.roll" color="#2b6cb0" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Yaw</Text>
-              <Text style={styles.val}>{gait.yaw.toFixed(1)}°</Text>
-              <Sparkline metricKey="gait.yaw" color="#2b6cb0" />
-            </View>
-          </View>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Heel FSR</Text>
-              <Text style={styles.val}>{gait.heel}</Text>
-              <Sparkline metricKey="gait.heel" color="#805ad5" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Met1 FSR</Text>
-              <Text style={styles.val}>{gait.mid}</Text>
-              <Sparkline metricKey="gait.mid" color="#805ad5" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Met5 FSR</Text>
-              <Text style={styles.val}>{gait.toe}</Text>
-              <Sparkline metricKey="gait.toe" color="#805ad5" />
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.dataCard}>
-          <Text style={styles.cardHeader}>Gait Analysis Node (Left Foot)</Text>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Pitch</Text>
-              <Text style={styles.val}>{gaitLeft.pitch.toFixed(1)}°</Text>
-              <Sparkline metricKey="gaitLeft.pitch" color="#2b6cb0" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Roll</Text>
-              <Text style={styles.val}>{gaitLeft.roll.toFixed(1)}°</Text>
-              <Sparkline metricKey="gaitLeft.roll" color="#2b6cb0" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Yaw</Text>
-              <Text style={styles.val}>{gaitLeft.yaw.toFixed(1)}°</Text>
-              <Sparkline metricKey="gaitLeft.yaw" color="#2b6cb0" />
-            </View>
-          </View>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Heel FSR</Text>
-              <Text style={styles.val}>{gaitLeft.heel}</Text>
-              <Sparkline metricKey="gaitLeft.heel" color="#805ad5" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Met1 FSR</Text>
-              <Text style={styles.val}>{gaitLeft.mid}</Text>
-              <Sparkline metricKey="gaitLeft.mid" color="#805ad5" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Met5 FSR</Text>
-              <Text style={styles.val}>{gaitLeft.toe}</Text>
-              <Sparkline metricKey="gaitLeft.toe" color="#805ad5" />
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.dataCard}>
-          <Text style={styles.cardHeader}>Posture Analysis Node</Text>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}><Text style={styles.label}>Spine Angle</Text><Text style={styles.val}>{posture.spineAngle.toFixed(1)}°</Text></View>
-          </View>
-        </View>
-
-        {/* HYDRATION DATA CARD (UPDATED METRICS) */}
-        <View style={[styles.dataCard, isSyncing && { borderColor: '#3B82F6', borderWidth: 2 }]}>
-          <Text style={styles.cardHeader}>Biometric Hydration Node (Fused System)</Text>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Final Fused Vol</Text>
-              <Text style={[styles.val, { fontSize: 24, color: '#2563EB' }]}>{hydration.fusedVolumeML.toFixed(1)} mL</Text>
-              <Sparkline metricKey="hydration.fusedVolumeML" color="#2563EB" />
-            </View>
-          </View>
-          <View style={[styles.grid, { marginTop: 10, borderTopWidth: 1, borderColor: '#edf2f7', paddingTop: 10 }]}>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>Load Cell Wt.</Text>
-              <Text style={[styles.val, { fontSize: 16, color: '#805ad5' }]}>{hydration.weightGrams.toFixed(1)} g</Text>
-              <Sparkline metricKey="hydration.weightGrams" color="#805ad5" />
-            </View>
-            <View style={styles.gridItem}>
-              <Text style={styles.label}>FDC Capacitance</Text>
-              <Text style={[styles.val, { fontSize: 16, color: '#d69e2e' }]}>{hydration.capVolumeML.toFixed(1)} mL</Text>
-              <Sparkline metricKey="hydration.capVolumeML" color="#d69e2e" />
-            </View>
-          </View>
-        </View>
+        <GaitCard slice="gait" title="Gait Analysis Node (Right Foot)" />
+        <GaitCard slice="gaitLeft" title="Gait Analysis Node (Left Foot)" />
+        <PostureCard />
+        <HydrationCard />
 
         {/* OTA HYDRATION CALIBRATION PANEL */}
         {nodeStatus.HYDRATION === 'connected' && (
@@ -492,13 +416,7 @@ export default function App() {
           </View>
         )}
 
-        <View style={styles.dataCard}>
-          <Text style={styles.cardHeader}>Environmental Context Node</Text>
-          <View style={styles.grid}>
-            <View style={styles.gridItem}><Text style={styles.label}>Temperature</Text><Text style={styles.val}>{environment.temp.toFixed(1)}°C</Text></View>
-            <View style={styles.gridItem}><Text style={styles.label}>Humidity</Text><Text style={styles.val}>{environment.humidity.toFixed(1)}%</Text></View>
-          </View>
-        </View>
+        <EnvironmentCard />
 
         {/* GPS TRACKING & MAP */}
         <View style={styles.sectionCard}>
@@ -690,6 +608,7 @@ const styles = StyleSheet.create({
   syncText: { color: '#FFF', fontWeight: 'bold', marginLeft: 8 },
   warnBanner: { backgroundColor: '#F59E0B', padding: 10, borderRadius: 8, marginHorizontal: 5, marginBottom: 15 },
   warnText: { color: '#FFF', fontWeight: 'bold', textAlign: 'center' },
+  errorBanner: { backgroundColor: '#DC2626', padding: 10, borderRadius: 8, marginHorizontal: 5, marginBottom: 15 },
   scrollArea: { flex: 1 },
   sectionCard: { backgroundColor: '#fff', padding: 15, borderRadius: 12, marginBottom: 20, elevation: 2 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2d3748', marginBottom: 10 },
