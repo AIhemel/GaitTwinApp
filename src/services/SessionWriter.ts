@@ -39,20 +39,17 @@ export const cell = (x: number | string | null | undefined, digits?: number): st
   return digits === undefined ? String(x) : x.toFixed(digits);
 };
 
-const readFirstLine = async (path: string): Promise<string | null> => {
-  try {
-    const chunk = await RNFS.read(path, 4096, 0, 'utf8');
-    const newlineIndex = chunk.indexOf('\n');
-    return (newlineIndex >= 0 ? chunk.slice(0, newlineIndex) : chunk).replace(/\r$/, '');
-  } catch {
-    return null;
-  }
+// Folder name for a new session: YYYY-MM-DD_HHMM_<label> in phone local time. Date-based rather than
+// "Day_3", so a night can't be filed under the wrong day; the label keeps only filename-safe characters.
+export const sessionFolderName = (label: string, at: Date = new Date()) => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  const safe = label.trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'session';
+  return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}_${p(at.getHours())}${p(at.getMinutes())}_${safe}`;
 };
 
 export interface OpenResult {
   dir: string;
   name: string;
-  renamed: boolean;
 }
 
 class SessionWriter {
@@ -78,29 +75,24 @@ class SessionWriter {
     return this.dir;
   }
 
-  // Opens (or resumes) Downloads/GaitTwin/<name>/. Resuming is only safe if every existing
-  // stream file still has the current header; otherwise a fresh suffixed folder is used so old
-  // files are never appended with mismatched columns.
-  async open(requestedName: string): Promise<OpenResult> {
+  // Every recording gets a NEW folder, Downloads/GaitTwin/YYYY-MM-DD_HHMM_<label>/ (_2, _3, ... if two
+  // start in the same minute). Nothing is ever appended to an older session's files, so a quick
+  // restart can't overwrite or mix into the previous session.
+  async open(label: string, at: Date = new Date()): Promise<OpenResult> {
     if (this.dir) await this.close();
     // Files may have been deleted/renamed via the session manager since they were last written.
     this.knownFiles.clear();
-    let name = requestedName;
-    let dir = `${GAITTWIN_DIR}/${name}`;
-    let renamed = false;
-
-    if ((await RNFS.exists(dir)) && !(await this.headersMatch(dir))) {
-      name = `${requestedName}_${new Date().toISOString().replace(/[:.]/g, '-')}`;
-      dir = `${GAITTWIN_DIR}/${name}`;
-      renamed = true;
-    }
+    const base = sessionFolderName(label, at);
+    let name = base;
+    for (let i = 2; await RNFS.exists(`${GAITTWIN_DIR}/${name}`); i++) name = `${base}_${i}`;
+    const dir = `${GAITTWIN_DIR}/${name}`;
     await RNFS.mkdir(dir);
 
     this.dir = dir;
     for (const s of STREAMS) this.buffers[s] = [];
     this.flushTimer = setInterval(() => { this.flush(); }, FLUSH_INTERVAL_MS);
     this.scanTimer = setInterval(() => { this.scanTouched(); }, SCAN_INTERVAL_MS);
-    return { dir, name, renamed };
+    return { dir, name };
   }
 
   async close(): Promise<void> {
@@ -162,17 +154,6 @@ class SessionWriter {
     });
     this.writeChain = job.catch(() => {});
     return job;
-  }
-
-  private async headersMatch(dir: string): Promise<boolean> {
-    for (const s of STREAMS) {
-      const path = this.pathFor(dir, s);
-      if (await RNFS.exists(path)) {
-        if ((await readFirstLine(path)) !== STREAM_HEADERS[s]) return false;
-        this.knownFiles.add(path);
-      }
-    }
-    return true;
   }
 
   // Android's MediaStore only shows new file content (e.g. over USB) after a scan.

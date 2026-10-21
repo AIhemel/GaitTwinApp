@@ -1,0 +1,33 @@
+{
+ "heel-strike TCN": {
+  "params": 32385,
+  "kB_float32": 126.5,
+  "kB_int8": 31.6,
+  "input": "4 x 1000 (10 s at 100 Hz)",
+  "ms_per_call": 2.015
+ },
+ "toe-off CNN": {
+  "params": 34065,
+  "kB_float32": 133.1,
+  "kB_int8": 33.3,
+  "input": "4 x 100 (one stride)",
+  "ms_per_call": 0.222
+ },
+ "activity CNN": {
+  "params": 50291,
+  "kB_float32": 196.4,
+  "kB_int8": 49.1,
+  "input": "10 x 500 (10 s at 50 Hz)",
+  "ms_per_call": 0.455
+ },
+ "activity gradient boosting": {
+  "kB": 3168.2,
+  "features": 37,
+  "ms_per_call": 8.018
+ },
+ "place logistic regression": {
+  "kB": 4.2,
+  "features": 37,
+  "ms_per_call": 0.946
+ }
+}

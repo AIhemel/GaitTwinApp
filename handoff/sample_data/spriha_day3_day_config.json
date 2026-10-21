@@ -1,0 +1,27 @@
+{
+  "day": 3,
+  "date": "2026-10-19",
+  "timezone": "Asia/Dhaka",
+  "subject": "Spriha",
+  "wearable_file": "Fit_2026-10-19/Fit_2026-10-19.csv",
+  "hydration_file": "hydration_manual.csv",
+  "temp_offset_c": -5,
+  "sessions": [
+    {"key": "O", "folder": "Night_3", "label": "Bedroom, night of 18-19 October", "context": "overnight"},
+    {"key": "W", "folder": "Day-3 mor", "label": "Walk before the ride", "context": "outdoor_walk",
+     "end_local": "12:09:35", "streams": ["gait", "environment", "gps"]},
+    {"key": "K", "folder": "Day-3 mor", "label": "Rickshaw ride", "context": "transport",
+     "start_local": "12:09:35", "end_local": "12:14:50", "streams": ["environment", "gps"]},
+    {"key": "A", "folder": "Day-3 mor", "label": "Walk after the ride", "context": "walk",
+     "start_local": "12:14:50", "streams": ["gait", "environment", "gps"]},
+    {"key": "P", "folder": "Day-3 posture", "label": "Afternoon sitting (posture cushion)", "context": "indoor"}
+  ],
+  "events": [
+    {"start": "12:09:35", "end": "12:14:50", "label": "rickshaw ride (from foot load and vibration)", "exclude_gait": true}
+  ],
+  "min_rate_hz": 50,
+  "normalize_fsr": true,
+  "lr_profiles": true,
+  "stance_invalid_sides": ["R"],
+  "sensor_notes": "Day_3 afternoon is a byte-identical copy of Day-3 mor (12:07-12:18) and is not analysed twice. Night_3 is the night of 18-19 October (00:48-09:01; identical to the copy filed under day 2, which was moved here); a nested duplicate Night_2 folder is ignored. Right insole streamed at about 60 samples/s. All three right-insole pressure sensors are replacements of a different type; every pressure sensor is normalised between its own 5th and 95th percentile. Band now records heart rate every minute. Rickshaw ride identified from foot unloading and vibration (not noted)."
+}

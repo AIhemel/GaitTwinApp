@@ -4,6 +4,9 @@ class BleManager {
   cancelDeviceConnection() {
     return Promise.resolve();
   }
+  readRSSIForDevice(id) {
+    return Promise.resolve({ id, rssi: -60 });
+  }
   writeCharacteristicWithResponseForDevice() {
     return Promise.resolve();
   }

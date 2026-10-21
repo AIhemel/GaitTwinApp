@@ -11,4 +11,5 @@ module.exports = {
   unlink: jest.fn(() => Promise.resolve()),
   scanFile: jest.fn(() => Promise.resolve()),
   stat: jest.fn(() => Promise.resolve({ mtime: new Date() })),
+  hash: jest.fn(() => Promise.resolve('0'.repeat(64))),
 };

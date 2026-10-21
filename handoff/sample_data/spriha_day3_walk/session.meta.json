@@ -1,0 +1,41 @@
+{
+  "fileName": "Day-2",
+  "startTime": "2026-10-19T06:07:43.157Z",
+  "endTime": "2026-10-19T06:18:28.628Z",
+  "appVersion": "0.0.1",
+  "nodeBindings": {
+    "GAIT": "58:8C:81:9D:FD:82",
+    "GAIT_LEFT": "10:B4:1D:E7:92:45",
+    "POSTURE": "E0:8C:FE:5E:00:2A",
+    "HYDRATION": null,
+    "ENVIRONMENT": "10:B4:1D:E9:36:99"
+  },
+  "activeInterests": [
+    "ENVIRONMENT",
+    "GAIT",
+    "GAIT_LEFT"
+  ],
+  "timeBase": "utc_ms and rx_ms are Unix epoch milliseconds on the phone clock; rx_ms is when the packet arrived. Gait/hydration: utc_ms = device_ms (node millis) + a min-delay offset estimate (ClockSync); refit offline from rx_ms/device_ms if needed. Environment: utc_ms = arrival = end of the 10 s averaging window; device_utc_s is the node's GPS clock (whole seconds). Posture: utc_ms = when the pose was committed (held 10 s; onset is ~10 s earlier); live events use arrival time, replayed queue events the cushion clock (utc_source column).",
+  "streams": {
+    "gait": "side,rx_ms,device_ms,utc_ms,Pitch,Roll,Quat_I,Quat_J,Quat_K,Quat_Real,Yaw,Heel_FSR,Met1_FSR,Met5_FSR,Accel_X,Accel_Y,Accel_Z",
+    "hydration": "rx_ms,device_ms,utc_ms,offline,Weight_g,Cap_mL,Fused_mL",
+    "environment": "rx_ms,device_utc_s,utc_ms,co2_ppm,temp_c,rh_pct,pm1,pm25,pm10,dba,lat,lon",
+    "posture": "rx_ms,device_utc_s,utc_ms,utc_source,replayed,pose,pose_name",
+    "gps": "utc_ms,lat,lon,accuracy_m,speed_mps,weather_temp_c,weather_rh_pct",
+    "events": "rx_ms,node,event,device_ms,utc_ms,detail"
+  },
+  "clockSyncAtEnd": {
+    "GAIT": {
+      "offsetMs": 1792389866253,
+      "samples": 45025
+    },
+    "GAIT_LEFT": {
+      "offsetMs": 1792390021712,
+      "samples": 77699
+    },
+    "HYDRATION": {
+      "offsetMs": null,
+      "samples": 0
+    }
+  }
+}

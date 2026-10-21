@@ -14,9 +14,9 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
   const [renamingFile, setRenamingFile] = useState<SessionInfo | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const isRecording = useSensorStore((state) => state.isRecording);
-  const activeFileName = useSensorStore((state) => state.fileName);
+  const activeFolder = useSensorStore((state) => state.sessionFolder);
   // The session being recorded is still being written to; renaming/deleting it would break that.
-  const isActive = (item: SessionInfo) => isRecording && !item.isLegacy && item.fileName === activeFileName;
+  const isActive = (item: SessionInfo) => isRecording && !item.isLegacy && item.fileName === activeFolder;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -124,6 +124,9 @@ export const SessionManagerScreen = ({ visible, onClose }: SessionManagerScreenP
                         {' · '}{(item.size / 1024).toFixed(1)} KB
                       </Text>
                       {!item.metadata && <Text style={styles.metaWarning}>metadata unavailable</Text>}
+                      {item.metadata?.endedBy === 'recovered' && (
+                        <Text style={styles.metaWarning}>app stopped unexpectedly; end time recovered (±1 min)</Text>
+                      )}
                       {item.isLegacy && <Text style={styles.metaWarning}>legacy single-file format</Text>}
                     </View>
                     {isActive(item) ? (

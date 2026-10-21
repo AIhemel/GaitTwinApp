@@ -14,20 +14,33 @@ const fmt = (v: number | null | undefined, digits: number, unit = '') =>
 
 const clockTime = (ms: number | null) => (ms === null ? '—' : new Date(ms).toLocaleTimeString());
 
+const ago = (ms: number | null) => {
+  if (ms === null) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 60 ? `${s} s ago` : `${Math.floor(s / 60)} min ago`;
+};
+
+// Live link health for one node: rate, data lost in the last 10 s, time since the last packet, RSSI.
+// Loss is highlighted from 10 %: that's where gait strides start to go missing.
 export const NodeStatsLine = React.memo(({ nodeId, deviceClock }: { nodeId: string; deviceClock: DeviceClock }) => {
   const stats = useSensorStore((state) => state.nodeStats[nodeId]);
   const status = useSensorStore((state) => state.nodeStatus[nodeId]);
   if (!stats) return null;
+  const rssi = stats.rssi !== null ? ` · ${stats.rssi} dBm` : '';
 
   // Low-rate nodes (environment every 10 s, posture on change): Hz would read as 0 most of the time.
   if (deviceClock === 'epoch_s') {
     if (!stats.packets) return null;
-    return <Text style={styles.hint}>{stats.packets} packets · last {clockTime(stats.lastPacketAt)}</Text>;
+    const loss = nodeId === 'ENVIRONMENT' && stats.lossPct !== null && stats.lossPct > 0 ? ` · ${stats.lossPct} % lost` : '';
+    return <Text style={styles.hint}>{stats.packets} packets · last {ago(stats.lastPacketAt)}{loss}{status === 'connected' ? rssi : ''}</Text>;
   }
-  if (status !== 'connected') return null;
+  if (status !== 'connected') {
+    return stats.lastPacketAt ? <Text style={styles.hint}>last data {ago(stats.lastPacketAt)}</Text> : null;
+  }
+  const lossy = stats.lossPct !== null && stats.lossPct >= 10;
   return (
-    <Text style={[styles.hint, !stats.syncLocked && styles.hintWarn]}>
-      {stats.rateHz} Hz · {stats.syncLocked ? 'clock synced' : 'clock sync settling…'}
+    <Text style={[styles.hint, (lossy || !stats.syncLocked) && styles.hintWarn]}>
+      {stats.rateHz} Hz{stats.lossPct !== null ? ` · ${stats.lossPct} % lost` : ''} · {stats.syncLocked ? 'clock synced' : 'clock sync settling…'}{rssi}
     </Text>
   );
 });

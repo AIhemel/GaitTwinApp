@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Health Twin Today</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --card: #ffffff; --ink: #161614; --ink2: #5b5a55; --line: #e4e2db;
+    --usual: #1f8a5b; --above: #c77700; --alert: #d23b3b; --below: #2a6fd6; --info: #6b6a64;
+    --heart: #e34948; --move: #2a78d6; --env: #7a5bd1; --water: #1baf7a; --post: #eb6834; --sleep: #4a3aa7;
+    --c-sleep: #4a3aa7; --c-home: #c9c6bb; --c-walk: #1baf7a; --c-ride: #eda100; --c-lab: #2a78d6; --c-sit: #eb6834; --c-none: #ecebe6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121211; --card: #1d1d1b; --ink: #f1f0ec; --ink2: #a8a69f; --line: #2e2d2a;
+      --c-home: #4a4843; --c-none: #262522;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121211; --card: #1d1d1b; --ink: #f1f0ec; --ink2: #a8a69f; --line: #2e2d2a;
+    --c-home: #4a4843; --c-none: #262522;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .phone { max-width: 420px; margin: 0 auto; padding: 16px 16px 40px; }
+  header h1 { font-size: 22px; margin: 4px 0 0; }
+  header .sub { color: var(--ink2); font-size: 13px; }
+  .note { color: var(--ink2); font-size: 12px; margin: 6px 0 14px; }
+  .card { background: var(--card); border-radius: 16px; padding: 14px 14px 12px; margin: 12px 0;
+          border: 1px solid var(--line); }
+  .card h2 { font-size: 15px; margin: 0; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; color: #fff; white-space: nowrap; }
+  .usual { background: var(--usual); } .above { background: var(--above); } .alert { background: var(--alert); }
+  .below { background: var(--below); } .info { background: var(--info); }
+  .big { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; }
+  .unit { font-size: 13px; color: var(--ink2); font-weight: 500; margin-left: 3px; }
+  .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .kv div { background: var(--bg); border-radius: 10px; padding: 7px 8px; }
+  .kv b { display: block; font-size: 15px; }
+  .kv span { font-size: 11px; color: var(--ink2); }
+  .small { font-size: 12px; color: var(--ink2); }
+  svg { display: block; width: 100%; }
+  .ribbon { display: flex; height: 22px; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
+  .ribbon div { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--ink2); }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+  .alerts li { list-style: none; padding: 8px 0; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+  .alerts li:first-child { border-top: 0; }
+  .alerts ul { margin: 6px 0 0; padding: 0; }
+  .alerts time { font-variant-numeric: tabular-nums; color: var(--ink2); font-size: 12px; min-width: 38px; }
+  .alerts .act { font-size: 11px; color: var(--ink2); }
+  .sym { display: grid; grid-template-columns: 92px 1fr 44px; gap: 6px; align-items: center; font-size: 12px; margin-top: 6px; }
+  .bar { position: relative; height: 10px; background: var(--bg); border-radius: 5px; }
+  .bar .band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--usual) 25%, transparent); border-radius: 5px; }
+  .bar .mid { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--ink2); left: 50%; }
+  .bar .val { position: absolute; top: -3px; width: 4px; height: 16px; border-radius: 2px; background: var(--move); }
+  .insight { border-left: 3px solid var(--move); padding: 2px 0 2px 10px; margin: 8px 0; font-size: 14px; }
+  .tabs { display: flex; justify-content: space-around; position: sticky; bottom: 0; background: var(--card);
+          border-top: 1px solid var(--line); padding: 10px 0; font-size: 12px; color: var(--ink2); margin: 16px -16px 0; }
+  .tabs b { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="phone">
+  <header>
+    <div class="sub">Tuesday, 14 October 2026 · Hemel</div>
+    <h1>Your health twin today</h1>
+    <div class="note">Mockup built from real day-7 data. Status chips compare with your own usual range (days 1–8);
+      the alerts are what the proposed rules would have sent.</div>
+  </header>
+
+  <!-- Timeline -->
+  <section class="card">
+    <div class="row"><h2>Your day</h2><span class="small">sensor coverage 21 h</span></div>
+    <div class="ribbon" id="ribbon"></div>
+    <div class="row small"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+    <svg id="hrline" viewBox="0 0 380 70" aria-label="Heart rate across the day"></svg>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <!-- Insights -->
+  <section class="card">
+    <h2>Insights</h2>
+    <p class="insight">Your heart rate was highest while sitting in the afternoon (up to 134 bpm at 16:07)
+      and lowest on your evening walk (median 93 bpm).</p>
+    <p class="insight" style="border-color: var(--alert)">The soldering-iron fumes at 19:10 gave the highest particle
+      reading of the study, at the sensor's limit.</p>
+    <p class="insight" style="border-color: var(--water)">You drank 1.27 L, 63 % of your goal. Most of it came before
+      noon and at 19:00, with nothing for 7 hours in between.</p>
+  </section>
+
+  <!-- Heart -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--heart)"></span>Heart</h2><span class="chip above">Above usual at rest</span></div>
+    <div class="row" style="margin-top:6px">
+      <div><span class="big">64</span><span class="unit">bpm sleeping</span></div>
+      <div class="small" style="text-align:right">usual 62 ± 2<br>lowest 10 min: 58</div>
+    </div>
+    <div class="kv">
+      <div><b>96</b><span>awake mean</span></div>
+      <div><b>23 min</b><span>&gt;120 at rest</span></div>
+      <div><b>134</b><span>max bpm</span></div>
+    </div>
+    <svg id="hrctx" viewBox="0 0 380 104" aria-label="Heart rate by context"></svg>
+  </section>
+
+  <!-- Movement & gait -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--move)"></span>Movement &amp; gait</h2><span class="chip usual">Symmetric</span></div>
+    <div class="row" style="margin-top:6px">
+      <div><span class="big">4,284</span><span class="unit">steps</span></div>
+      <div class="small" style="text-align:right">walking 43 min<br>usual 5,900 / day</div>
+    </div>
+    <div class="kv">
+      <div><b>100</b><span>cadence /min</span></div>
+      <div><b>1.20 s</b><span>stride time</span></div>
+      <div><b>1.18 m/s</b><span>walk speed</span></div>
+    </div>
+    <div class="small" style="margin-top:12px">Left vs right (symmetry index; green = your usual range)</div>
+    <div id="sym"></div>
+    <div class="small" style="margin-top:10px">⚠ 19:21 possible slip, confirmed by you (impact 80 m/s², forefoot first)</div>
+  </section>
+
+  <!-- Environment -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--env)"></span>Environment</h2><span class="chip alert">1 hazardous event</span></div>
+    <div class="small" style="margin-top:6px">PM<sub>2.5</sub> exposure while recording (minutes per air-quality category)</div>
+    <svg id="aqi" viewBox="0 0 380 46" aria-label="Minutes per air-quality category"></svg>
+    <div class="kv">
+      <div><b>40</b><span>indoor PM2.5</span></div>
+      <div><b>57</b><span>outdoor PM2.5</span></div>
+      <div><b>60</b><span>bedroom PM2.5</span></div>
+      <div><b>628</b><span>indoor CO₂ ppm</span></div>
+      <div><b>75 dBA</b><span>outdoor noise</span></div>
+      <div><b>62 dBA</b><span>bedroom noise</span></div>
+    </div>
+    <div class="small" style="margin-top:8px">Above the WHO 24-h PM<sub>2.5</sub> guideline (15) all day: typical for Dhaka, shown here rather than as alerts.</div>
+  </section>
+
+  <!-- Hydration -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--water)"></span>Hydration</h2><span class="chip below">Below goal</span></div>
+    <div class="row" style="margin-top:6px">
+      <svg id="ring" viewBox="0 0 90 90" style="width:90px"></svg>
+      <div style="flex:1; padding-left:12px">
+        <div><span class="big">1.27</span><span class="unit">of 2.0 L</span></div>
+        <div class="small">6 drinks · longest awake gap 7.0 h (11:56–19:00)</div>
+      </div>
+    </div>
+    <svg id="drinks" viewBox="0 0 380 40" aria-label="Drinks across the day"></svg>
+  </section>
+
+  <!-- Posture -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--post)"></span>Posture</h2><span class="chip info">Partial data</span></div>
+    <div class="kv">
+      <div><b>22 min</b><span>monitored</span></div>
+      <div><b>18 %</b><span>upright</span></div>
+      <div><b>3.4 min</b><span>between changes</span></div>
+    </div>
+    <div class="small" style="margin-top:8px">Cushion connected for 22 of 268 sitting minutes (14:35–19:03).</div>
+  </section>
+
+  <!-- Sleep -->
+  <section class="card">
+    <div class="row"><h2><span class="dot" style="background:var(--sleep)"></span>Sleep</h2><span class="chip above">Short</span></div>
+    <div class="row" style="margin-top:6px">
+      <div><span class="big">5 h 23</span><span class="unit">04:35–10:03</span></div>
+      <div class="small" style="text-align:right">usual 6.5 h<br>SpO₂ 97 %</div>
+    </div>
+    <svg id="stages" viewBox="0 0 380 34" aria-label="Sleep stages"></svg>
+  </section>
+
+  <!-- Alerts -->
+  <section class="card alerts">
+    <div class="row"><h2>Alerts &amp; reminders today</h2><span class="small">6</span></div>
+    <ul id="alerts"></ul>
+  </section>
+
+  <nav class="tabs"><b>Today</b><span>Timeline</span><span>Trends</span><span>Alerts</span><span>Sensors</span></nav>
+</div>
+
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+const hm = s => { const [h, m] = s.split(":").map(Number); return h + m / 60; };
+
+// Context ribbon (local time)
+const segs = [["00:00","01:33","none"],["01:33","04:35","home"],["04:35","10:03","sleep"],["10:03","10:54","home"],
+  ["10:54","10:58","walk"],["10:58","11:03","ride"],["11:03","11:09","walk"],["11:09","14:32","lab"],["14:32","14:35","home"],
+  ["14:35","19:03","sit"],["19:03","19:07","home"],["19:07","19:41","walk"],["19:41","21:30","home"],["21:30","24:00","none"]];
+const names = {sleep:"Sleep", home:"Home", walk:"Walk", ride:"Rickshaw", lab:"Lab", sit:"Sitting", none:"No data"};
+const rb = document.getElementById("ribbon");
+segs.forEach(([a,b,k]) => { const d = document.createElement("div"); d.style.width = (hm(b)-hm(a))/24*100 + "%";
+  d.style.background = `var(--c-${k})`; d.title = `${names[k]} ${a}–${b}`; rb.appendChild(d); });
+const lg = document.getElementById("legend");
+Object.entries(names).forEach(([k,n]) => { lg.insertAdjacentHTML("beforeend", `<span><i style="background:var(--c-${k})"></i>${n}</span>`); });
+
+// Half-hourly heart rate with event pins
+const hr = [97,95,91,87,84,76,78,77,75,64,61,59,63,61,61,67,65,66,65,65,78,101,105,97,101,91,87,99,112,104,106,117,118,111,107,106,104,104,94,99,99,96,95,null,null,null,null,null];
+function hrLine() {
+  const s = document.getElementById("hrline"); s.innerHTML = "";
+  const x = i => 4 + i * (372 / 47), y = v => 62 - (v - 50) / 80 * 56;
+  [60, 100, 120].forEach(v => { el("line", {x1:4, x2:376, y1:y(v), y2:y(v), stroke:css("--line")}, s);
+    el("text", {x:376, y:y(v)-2, "text-anchor":"end", "font-size":9, fill:css("--ink2")}, s).textContent = v; });
+  let d = ""; hr.forEach((v,i) => { if (v == null) return; d += (d && hr[i-1] != null ? "L" : "M") + x(i) + "," + y(v); });
+  el("path", {d, fill:"none", stroke:css("--heart"), "stroke-width":2, "stroke-linejoin":"round"}, s);
+  [["19:10","fumes",css("--alert")],["19:21","slip",css("--move")],["16:07","HR 134",css("--above")]].forEach(([t,l,c],j) => {
+    const xx = 4 + hm(t) / 24 * 372; el("line", {x1:xx, x2:xx, y1:6, y2:62, stroke:c, "stroke-dasharray":"2 2"}, s);
+    el("text", {x:xx + (j===1?3:-3), y:10 + j*9, "font-size":9, fill:c, "text-anchor": j===1?"start":"end"}, s).textContent = l; });
+}
+
+// Heart rate by context
+function hrCtx() {
+  const s = document.getElementById("hrctx"); s.innerHTML = "";
+  const rows = [["Sleep",61,66],["Walking",91,95],["Other awake",80,97],["Lab / sitting",97,110.5],["Rickshaw",109,111]];
+  const med = [64,93,90,104,109];
+  const x = v => 92 + (v - 50) / 80 * 280;
+  rows.forEach(([n,a,b],i) => { const yy = 12 + i*19;
+    el("text", {x:0, y:yy+4, "font-size":11, fill:css("--ink2")}, s).textContent = n;
+    el("rect", {x:x(a), y:yy-5, width:Math.max(3,x(b)-x(a)), height:10, rx:3, fill:css("--heart"), opacity:0.3}, s);
+    el("rect", {x:x(med[i])-1.5, y:yy-7, width:3, height:14, fill:css("--heart")}, s);
+    el("text", {x:x(b)+5, y:yy+4, "font-size":10, fill:css("--ink")}, s).textContent = med[i]; });
+}
+
+// Symmetry bars: value vs personal usual band (Hemel days 3-8 ranges)
+function sym() {
+  const box = document.getElementById("sym"); box.innerHTML = "";
+  const m = [["Stance",-1.9,-1.9,5.8],["Swing",5.1,-9.0,5.1],["Push-off",0.1,0.1,5.2],["Foot tilt",7.8,-7.7,7.8],["Stride time",1.1,-0.3,1.3]];
+  const pos = v => 50 + v / 15 * 50;  // +-15 % full scale
+  m.forEach(([n,v,lo,hi]) => box.insertAdjacentHTML("beforeend",
+    `<div class="sym"><span>${n}</span><div class="bar"><div class="band" style="left:${pos(lo)}%;width:${pos(hi)-pos(lo)}%"></div>` +
+    `<div class="mid"></div><div class="val" style="left:calc(${pos(v)}% - 2px)"></div></div><span>${v>0?"+":""}${v}%</span></div>`));
+}
+
+// AQI minutes (EPA 2024 categories) from 1-min PM2.5 while recording
+function aqi() {
+  const s = document.getElementById("aqi"); s.innerHTML = "";
+  const cats = [["Good",0,"#1f8a5b"],["Moderate",0,"#b5a400"],["Sensitive",343,"#eda100"],["Unhealthy",295,"#eb6834"],["Very unh.",11,"#d23b3b"],["Hazardous",2,"#7a1f3d"]];
+  const tot = cats.reduce((a,c) => a + c[1], 0); let x = 0;
+  cats.forEach(([n,v,c]) => { if (!v) return; const w = v / tot * 380;
+    el("rect", {x, y:2, width:w, height:18, fill:c}, s);
+    if (w > 40) el("text", {x:x+4, y:15, "font-size":10, fill:"#fff"}, s).textContent = `${n} ${v}′`;
+    x += w; });
+  el("text", {x:380, y:38, "text-anchor":"end", "font-size":10, fill:css("--ink2")}, s).textContent = "very unhealthy + hazardous: 13 min (01:33–01:43 bedroom, 19:10 fumes)";
+}
+
+// Hydration ring and drink pins
+function water() {
+  const s = document.getElementById("ring"); s.innerHTML = "";
+  const r = 36, c = 2 * Math.PI * r, f = 1265 / 2000;
+  el("circle", {cx:45, cy:45, r, fill:"none", stroke:css("--line"), "stroke-width":9}, s);
+  el("circle", {cx:45, cy:45, r, fill:"none", stroke:css("--water"), "stroke-width":9, "stroke-linecap":"round",
+    "stroke-dasharray":`${c*f} ${c}`, transform:"rotate(-90 45 45)"}, s);
+  el("text", {x:45, y:50, "text-anchor":"middle", "font-size":15, "font-weight":700, fill:css("--ink")}, s).textContent = "63%";
+  const d = document.getElementById("drinks"); d.innerHTML = "";
+  el("line", {x1:4, x2:376, y1:28, y2:28, stroke:css("--line"), "stroke-width":2}, d);
+  [["01:00",100],["02:32",230],["10:10",280],["11:34",121],["11:56",34],["19:00",500]].forEach(([t,v]) => {
+    const x = 4 + hm(t) / 24 * 372, h = 4 + v / 500 * 20;
+    el("rect", {x:x-3, y:28-h, width:6, height:h, rx:2, fill:css("--water")}, d); });
+  ["00","06","12","18","24"].forEach((t,i) => el("text", {x:4+i*93, y:39, "font-size":9, fill:css("--ink2"), "text-anchor": i==0?"start":i==4?"end":"middle"}, d).textContent = t);
+}
+
+// Sleep stages (proportions only; ordering illustrative)
+function stages() {
+  const s = document.getElementById("stages"); s.innerHTML = "";
+  let x = 0; [["Deep",30,"#4a3aa7"],["REM",23,"#8f7fe0"],["Light",47,"#c6bff2"]].forEach(([n,p,c]) => {
+    const w = p / 100 * 380; el("rect", {x, y:4, width:w, height:18, fill:c}, s);
+    el("text", {x:x+5, y:17, "font-size":11, fill: n==="Light" ? "#2b2464" : "#fff"}, s).textContent = `${n} ${p}%`; x += w; });
+}
+
+// Alerts the proposed rules would have produced on this day
+const alerts = [
+  ["10:00","info","SL-1","5 h 23 min of sleep (usual 6.5 h)."],
+  ["14:26","above","HY-1","No water for 2 h 30 min. Log a drink?","Reminder · snoozed"],
+  ["16:11","alert","HR-1","Heart rate 123 bpm for 10 min while sitting.","OK · 'I was not active'"],
+  ["16:41","above","HY-2","0.77 L of 2.0 L by 16:40.","Reminder"],
+  ["19:11","alert","EN-2","Hazardous air: PM2.5 1,920. Move away or ventilate.","Logged: soldering fumes"],
+  ["19:21","above","GA-2","Did you slip or stumble?","Answered: Yes"]];
+function alertList() {
+  const ul = document.getElementById("alerts"); ul.innerHTML = "";
+  alerts.forEach(([t,sev,id,msg,act]) => ul.insertAdjacentHTML("beforeend",
+    `<li><time>${t}</time><div><span class="chip ${sev}">${id}</span> ${msg}${act ? `<div class="act">${act}</div>` : ""}</div></li>`));
+}
+
+function draw() { hrLine(); hrCtx(); sym(); aqi(); water(); stages(); alertList(); }
+draw();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "day": 7,
+  "date": "2026-10-14",
+  "timezone": "Asia/Dhaka",
+  "subject": "Hemel",
+  "wearable_file": "Fit_2026-10-14.csv",
+  "hydration_file": "hydration_manual.csv",
+  "temp_offset_c": -5,
+  "sessions": [
+    {"key": "O", "folder": "Day_7 overnight", "label": "Overnight bedroom monitoring", "context": "overnight"},
+    {"key": "S", "folder": "Day_7 morning", "label": "Stairs and walk to the rickshaw", "context": "walk",
+     "end_local": "10:58:00", "streams": ["gait", "environment", "gps"]},
+    {"key": "K", "folder": "Day_7 morning", "label": "Rickshaw ride", "context": "transport",
+     "start_local": "10:58:00", "end_local": "11:03:00", "streams": ["environment", "gps"]},
+    {"key": "A", "folder": "Day_7 morning", "label": "Walk to the lab (with lift)", "context": "walk",
+     "start_local": "11:03:00", "end_local": "11:09:00", "streams": ["gait", "environment", "gps"]},
+    {"key": "L", "folder": "Day_7 morning", "label": "Lab", "context": "indoor",
+     "start_local": "11:09:00", "streams": ["gait", "environment", "hydration", "posture"]},
+    {"key": "P", "folder": "Day_7 noon", "label": "Afternoon sitting (posture only)", "context": "indoor",
+     "end_local": "19:03:00", "streams": ["posture"]},
+    {"key": "N", "folder": "Day_7 night", "label": "Evening walk", "context": "outdoor_walk"}
+  ],
+  "events": [
+    {"start": "10:54", "end": "10:56", "label": "stairs"},
+    {"start": "10:58", "end": "11:03", "label": "rickshaw ride", "exclude_gait": true},
+    {"start": "11:05", "end": "11:06:30", "label": "lift", "exclude_gait": true},
+    {"start": "19:10:05", "end": "19:11:35", "label": "soldering-iron fumes", "zoom": "env"},
+    {"start": "19:20:45", "end": "19:21:30", "label": "slip", "exclude_gait": true, "zoom": "gait"}
+  ],
+  "bottle_removals_are_drinks": true,
+  "bottle_checks": [
+    {"time": "11:52", "grams": 86, "label": "test pour (participant)"}
+  ],
+  "sensor_notes": "Right Met1 still the replacement type (pressure stance not valid). Right heel FSR connection broke during the night session. Water drunk before every walk (10:10, 19:00). Smart bottle streamed in the lab; 86 g test pour at 11:52.",
+  "stance_invalid_sides": ["R"],
+  "max_gap_frac": 0.15
+}

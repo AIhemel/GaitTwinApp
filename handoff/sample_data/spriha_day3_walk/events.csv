@@ -1,0 +1,6 @@
+rx_ms,node,event,device_ms,utc_ms,detail
+1792390063222,APP,session_start,,,
+1792390063222,ENVIRONMENT,status_at_start_connected,,,
+1792390063222,GAIT,status_at_start_connected,,,
+1792390063222,GAIT_LEFT,status_at_start_connected,,,
+1792390708628,APP,session_stop,,,

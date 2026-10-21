@@ -1,0 +1,234 @@
+{
+ "slip": {
+  "steps": 18261,
+  "walking_hours": 6.15,
+  "slip_rank_score": 131,
+  "slip_false_alarms_per_hour_score": 21.13,
+  "slip_rank_max_z": 1148,
+  "slip_false_alarms_per_hour_max_z": 186.42,
+  "slip_rank_z_impact": 1,
+  "z_impact_next_highest": 5.98,
+  "z_impact_steps_above_5": 11,
+  "slip_step": {
+   "time": "2026-10-14 19:21:02.098431641+06:00",
+   "impact": 79.65,
+   "second_peak": 37.85,
+   "rot_max": 332.05,
+   "tilt_range": 42.84,
+   "duration": 0.97,
+   "z_impact": 6.12,
+   "z_jerk": 3.42,
+   "score": 0.66,
+   "max_z": 6.12
+  },
+  "top_steps": [
+   {
+    "day": 5,
+    "time": "10:44:59",
+    "side": "R",
+    "score": 0.764,
+    "impact": 77.2,
+    "duration": 2.59,
+    "noted_event": null
+   },
+   {
+    "day": 5,
+    "time": "10:41:49",
+    "side": "R",
+    "score": 0.758,
+    "impact": 48.4,
+    "duration": 1.92,
+    "noted_event": null
+   },
+   {
+    "day": 2,
+    "time": "11:18:33",
+    "side": "R",
+    "score": 0.755,
+    "impact": 26.4,
+    "duration": 2.67,
+    "noted_event": null
+   },
+   {
+    "day": 4,
+    "time": "19:46:40",
+    "side": "L",
+    "score": 0.753,
+    "impact": 52.4,
+    "duration": 2.35,
+    "noted_event": "climbing stairs"
+   },
+   {
+    "day": 6,
+    "time": "10:19:57",
+    "side": "L",
+    "score": 0.748,
+    "impact": 54.3,
+    "duration": 2.3,
+    "noted_event": "rickshaw ride"
+   },
+   {
+    "day": 5,
+    "time": "11:10:08",
+    "side": "R",
+    "score": 0.744,
+    "impact": 38.8,
+    "duration": 0.71,
+    "noted_event": null
+   },
+   {
+    "day": 1,
+    "time": "19:15:38",
+    "side": "R",
+    "score": 0.739,
+    "impact": 26.7,
+    "duration": 1.88,
+    "noted_event": null
+   },
+   {
+    "day": 6,
+    "time": "17:48:40",
+    "side": "R",
+    "score": 0.736,
+    "impact": 49.8,
+    "duration": 2.34,
+    "noted_event": null
+   },
+   {
+    "day": 5,
+    "time": "10:41:52",
+    "side": "R",
+    "score": 0.734,
+    "impact": 42.6,
+    "duration": 0.74,
+    "noted_event": null
+   },
+   {
+    "day": 4,
+    "time": "19:36:26",
+    "side": "L",
+    "score": 0.732,
+    "impact": 38.9,
+    "duration": 0.66,
+    "noted_event": "dinner at a restaurant"
+   },
+   {
+    "day": 6,
+    "time": "10:19:55",
+    "side": "L",
+    "score": 0.73,
+    "impact": 32.4,
+    "duration": 1.72,
+    "noted_event": "rickshaw ride"
+   },
+   {
+    "day": 5,
+    "time": "10:41:53",
+    "side": "R",
+    "score": 0.727,
+    "impact": 36.5,
+    "duration": 0.72,
+    "noted_event": null
+   },
+   {
+    "day": 6,
+    "time": "17:31:06",
+    "side": "L",
+    "score": 0.719,
+    "impact": 25.1,
+    "duration": 2.44,
+    "noted_event": null
+   },
+   {
+    "day": 4,
+    "time": "19:27:52",
+    "side": "L",
+    "score": 0.716,
+    "impact": 25.9,
+    "duration": 1.96,
+    "noted_event": null
+   },
+   {
+    "day": 6,
+    "time": "17:48:39",
+    "side": "L",
+    "score": 0.716,
+    "impact": 50.9,
+    "duration": 0.92,
+    "noted_event": null
+   }
+  ]
+ },
+ "exposure": {
+  "episodes": 20,
+  "noted_events": [
+   {
+    "day": 4,
+    "event": "dinner at a restaurant",
+    "detected": true,
+    "peak_pm25": 411.0,
+    "co2_rise": 177.85000000000002
+   },
+   {
+    "day": 6,
+    "event": "metro train (outbound)",
+    "detected": true,
+    "peak_pm25": 63.0,
+    "co2_rise": 1064.25
+   },
+   {
+    "day": 6,
+    "event": "metro station",
+    "detected": true,
+    "peak_pm25": 79.0,
+    "co2_rise": 580.3
+   },
+   {
+    "day": 6,
+    "event": "closed market",
+    "detected": true,
+    "peak_pm25": 514.0,
+    "co2_rise": 428.85000000000014
+   },
+   {
+    "day": 6,
+    "event": "smoke-filled space",
+    "detected": true,
+    "peak_pm25": 716.0,
+    "co2_rise": 1079.9
+   },
+   {
+    "day": 6,
+    "event": "metro train (return)",
+    "detected": true,
+    "peak_pm25": 51.0,
+    "co2_rise": 1997.85
+   },
+   {
+    "day": 7,
+    "event": "soldering-iron fumes",
+    "detected": true,
+    "peak_pm25": 3333.0,
+    "co2_rise": 595.3999999999999
+   }
+  ],
+  "episodes_by_day": {
+   "2": 1,
+   "4": 3,
+   "5": 1,
+   "6": 14,
+   "7": 1
+  },
+  "noted_episodes": 14,
+  "by_trigger": {
+   "PM": 9,
+   "CO2": 9,
+   "PM+CO2": 2
+  },
+  "by_context": {
+   "outdoor_walk": 8,
+   "transport": 11,
+   "walk": 1
+  }
+ }
+}

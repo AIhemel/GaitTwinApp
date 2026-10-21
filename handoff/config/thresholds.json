@@ -1,0 +1,118 @@
+{
+  "_about": "Default alert thresholds for the health-twin notification engine. Three layers per signal: (1) absolute guideline limits, (2) personal-baseline anomaly (robust z = (x - median) / (1.4826 * MAD) over the user's own history in the same context), (3) persistence + cooldown so one noisy minute never notifies. Values marked 'from_data' come from the thesis recordings (Hemel days 1-8, Spriha days 1-4, Dhaka, Oct 2026). Every threshold is a starting point to tune with the in-app 'useful / not useful' feedback.",
+  "version": "2026-10-21",
+
+  "baseline_learning": {
+    "min_days_before_personal_alerts": 3,
+    "window_days": 14,
+    "robust_z_alert": 4.0,
+    "note": "Until min_days is reached only absolute (layer 1) alerts fire. Baselines are kept per context (sleep, sitting, walking, vehicle, per place class)."
+  },
+
+  "notification_policy": {
+    "severity_levels": ["info", "nudge", "warning", "urgent"],
+    "cooldown_min_per_type": 60,
+    "max_non_urgent_per_day": 8,
+    "quiet_hours": "while asleep (band sleep stage) or 23:00-07:00 local; only 'urgent' passes",
+    "snooze_options_min": [30, 60, 240],
+    "group_simultaneous_within_s": 120,
+    "log_every_alert_with_user_response": true,
+    "note": "The user response log (useful / not useful / wrong) is evaluation data for the thesis and the basis for threshold tuning."
+  },
+
+  "heart_rate": {
+    "high_at_rest": {"bpm": 120, "min_duration_min": 10, "condition": "band steps < 10/min and context not walking/vehicle", "severity": "warning",
+                     "source": "same default as common smartwatch high-HR notifications (120 bpm, 10 min inactive)"},
+    "very_high_at_rest": {"bpm": 150, "min_duration_min": 10, "severity": "urgent"},
+    "low_awake": {"bpm": 40, "min_duration_min": 10, "severity": "warning"},
+    "personal_sitting_high": {"robust_z": 4.0, "min_duration_min": 15, "severity": "nudge",
+                              "from_data": {"Hemel_indoor_sitting_median_bpm": 104, "Hemel_indoor_sitting_iqr": [97, 110.5]}},
+    "sleeping_hr_elevated": {"delta_bpm_above_baseline": 5, "baseline": "median of the last 7 nights' mean sleeping HR", "severity": "info", "shown": "morning card",
+                             "from_data": {"Hemel_mean_sd": [62.3, 1.7], "Spriha_mean_sd": [70.7, 0.9]},
+                             "note": "+5 bpm is about 3 SD of night-to-night variation for both participants"},
+    "cadence_lock_guard": {"abs_diff_bpm": 6, "min_consecutive_min": 2,
+                           "note": "while walking the optical band can report step rate instead of pulse; drop those minutes before any HR rule (seen on 22/30 min of one Hemel walk)"}
+  },
+
+  "gait_asymmetry": {
+    "symmetry_index": "SI % = 100 * (R - L) / (0.5 * (R + L))",
+    "window": {"steady_strides_per_foot": 60, "consecutive_windows": 2, "min_continuous_walking_s": 120},
+    "exclude": ["stairs", "slip windows", "first and last 5 strides of a walk", "minutes where the sensor health check flags a pressure sensor"],
+    "metrics": {
+      "stance_pct_imu":   {"abs_floor_pct": 5,  "personal_mad_k": 4, "needs_synced_clocks": false, "from_data": {"Hemel_daily_SI_range": [-1.9, 5.8]}},
+      "swing_s_imu":      {"abs_floor_pct": 10, "personal_mad_k": 4, "needs_synced_clocks": false, "from_data": {"Hemel_daily_SI_range": [-9.0, 5.1]}},
+      "pushoff_pct":      {"abs_floor_pct": 5,  "personal_mad_k": 4, "needs_synced_clocks": false, "from_data": {"Hemel_daily_SI_range": [0.1, 5.2]}},
+      "tilt_range_deg":   {"abs_floor_pct": 15, "personal_mad_k": 4, "needs_synced_clocks": false, "from_data": {"Hemel_daily_SI_range": [-7.7, 7.8], "Spriha": "left larger on all 3 days: a personal baseline, not an alert"}},
+      "stride_s":         {"abs_floor_pct": 3,  "personal_mad_k": 4, "needs_synced_clocks": false, "from_data": {"Hemel_daily_SI_range": [-0.3, 1.3]}},
+      "step_phase_pct":   {"expected": 50, "abs_floor_pct_points": 5, "needs_synced_clocks": true,
+                           "note": "left heel strike as % of the right cycle; only valid when both insoles share a synced clock (invalid on every Spriha day)"}
+    },
+    "rule": "alert when |SI - personal_median| > max(abs_floor, k * MAD) in 2 consecutive windows",
+    "severity": "nudge (first), warning if it persists across 3 walks in a day",
+    "pressure_based_measures": "disabled for a foot whose FSRs were replaced or flagged; IMU-based stance/swing/push-off are the primary measures",
+    "body_size_normalisation": "compare stride time as stride_s / sqrt(L / 9.81), L = 0.53 * height_m (removes most of the difference between people)"
+  },
+
+  "gait_events": {
+    "possible_slip": {"impact_robust_z": 6.0, "extra": "forefoot-first contact (no heel load at impact)", "severity": "nudge", "action": "ask 'Did you slip or stumble?' (Yes / No) and log the answer",
+                      "from_data": {"slip_z_impact": 6.12, "next_highest_normal_step_z": 5.98, "walking_hours_checked": 6.15},
+                      "note": "one real slip only and a thin margin: treat as a candidate detector and use the confirmations as labels"}
+  },
+
+  "environment": {
+    "pm25": {
+      "status_display": "EPA AQI category of the rolling 1-h mean (2024 breakpoints, ug/m3): good <=9.0, moderate <=35.4, unhealthy for sensitive groups <=55.4, unhealthy <=125.4, very unhealthy <=225.4, hazardous >225.4",
+      "spike_alert": {"rolling_mean_min": 5, "ug_m3": 150, "severity": "warning", "message": "very high particle level - move away or ventilate"},
+      "hazard_alert": {"rolling_mean_min": 5, "ug_m3": 250, "severity": "urgent"},
+      "daily_report_only": {"who_24h_guideline_ug_m3": 15, "note": "Dhaka indoor/outdoor medians were 50-80, so a 15 threshold would notify all day: show it in the report, never as a push"},
+      "from_data": {"typical_indoor_median": [52, 56], "typical_outdoor_median": [69, 71], "events": {"restaurant": 357, "closed_market": 514, "smoke_filled_space": 716, "soldering_fumes": 3333}},
+      "sensor_ceiling": 3333
+    },
+    "co2_ppm": {"ventilate": {"ppm": 1000, "rolling_mean_min": 10, "severity": "nudge"}, "poor": {"ppm": 1500, "rolling_mean_min": 10, "severity": "warning"},
+                "from_data": {"metro": [1500, 2500], "closed_evening_room_rise_ppm_per_h": 146},
+                "precondition": "fresh-air calibration done (the sensor read below outdoor ~420 ppm)"},
+    "noise_dba": {"loud": {"dba": 70, "rolling_leq_min": 15, "severity": "info"}, "hearing_risk": {"dba": 85, "rolling_leq_min": 30, "severity": "warning"},
+                  "bedroom_during_sleep": {"dba": 45, "report_only": true},
+                  "from_data": {"vehicle_median": [77, 78], "Hemel_bedroom_median": 61, "Spriha_bedroom_median": 49}},
+    "heat": {"heat_index_c": {"extreme_caution": 32, "danger": 39}, "severity": ["nudge", "warning"],
+             "precondition": "node uptime > 30 min AND per-node calibration offset applied (cold start reads up to 12 C high within 30 min; fixed -5 C offset is not enough)"},
+    "personal_place_anomaly": {"robust_z": 4.0, "min_duration_min": 5, "per": "place class (bedroom, indoor, outdoor, vehicle)", "severity": "info"},
+    "warm_up_exclusion_min": 30
+  },
+
+  "hydration": {
+    "daily_target_l_from_drinks": {"male": 2.0, "female": 1.6, "source": "about 80 % of the EFSA adequate total water intake (2.5 / 2.0 L incl. food)",
+                                   "heat_adjustment_l": 0.5, "heat_adjustment_when": "daily max heat index >= 32 C (heuristic, label it as such)"},
+    "pace_check": {"waking_window_h": 16, "alert_below_fraction_of_pace": 0.6, "check_every_min": 60, "severity": "nudge"},
+    "gap_reminder": {"hours_awake_without_drink": 2.5, "severity": "nudge", "suppress_while_asleep": true,
+                     "from_data": {"Hemel_longest_gap_h": [3.0, 9.8], "Spriha_longest_gap_h": [8.8, 19.0]}},
+    "bottle_signal_rules": {"primary_channel": "Fused_mL", "discard": "Cap_mL == 500", "skip_plateaus_with_weight_below_g": 2, "drink_time": "at lift", "removal_counts_as_drink": true},
+    "do_not_claim": "water before walking lowers heart rate - not supported (partial rho 0.04 after time of day)"
+  },
+
+  "posture": {
+    "sustained_poor_posture": {"min_continuous_min": 20, "classes": ["SLOUCH", "LEAN_BACKWARD", "LEAN_LEFT", "LEAN_RIGHT"], "severity": "nudge"},
+    "sitting_too_long": {"min_continuous_min": 50, "message": "stand up and move for 2-3 minutes", "severity": "nudge"},
+    "calibration": "per-user 'sit upright' calibration at first use; for Hemel the cushion reported deliberate upright sitting as LEAN_FORWARD",
+    "pose_commit_delay_s": 10
+  },
+
+  "sleep": {
+    "short_sleep_h": 6.0, "report_only": true,
+    "from_data": {"Hemel_mean_h": 6.5, "Spriha": "band records only part of the night - not comparable"}
+  },
+
+  "data_quality": {
+    "stream_silent_alert_min": {"gait": 2, "environment": 2, "posture": 5, "hydration": 10},
+    "rate_below_fraction_of_expected": 0.8,
+    "expected_rates_hz": {"gait_per_insole": 112, "environment": 0.1},
+    "band_not_worn_min": 30,
+    "fsr_fault_fraction_of_minute": 0.25,
+    "severity": "info (shown in the app status bar; push only during an active session)"
+  },
+
+  "participants": {
+    "Hemel":  {"sex": "male",   "height_m": 1.7145, "mass_kg": 77, "leg_length_m_est": 0.909},
+    "Spriha": {"sex": "female", "height_m": 1.4732, "mass_kg": 68, "leg_length_m_est": 0.781}
+  }
+}

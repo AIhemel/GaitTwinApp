@@ -6,10 +6,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type NodeConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'waiting';
 
 export interface NodeStats {
-  rateHz: number; // packets/s over the last second
+  rateHz: number; // packets/s over the last 5 s
   syncLocked: boolean; // ClockSync has enough samples for a settled offset ('millis' nodes only)
   packets: number; // packets received this app run
   lastPacketAt: number | null; // phone time of the last packet
+  lossPct: number | null; // share of the last 10 s the node streamed but the phone never received
+  rssi: number | null; // dBm, read once a minute while connected
 }
 
 export interface GaitReading { pitch: number; roll: number; yaw: number; heel: number; mid: number; toe: number }
@@ -41,7 +43,8 @@ interface SensorState {
   isRecording: boolean;
   isSyncing: boolean;
   writeError: string | null;
-  fileName: string;
+  fileName: string; // the label typed by the user
+  sessionFolder: string | null; // folder of the session being recorded (YYYY-MM-DD_HHMM_<label>)
   nodeBindings: Record<string, string | null>;
 
   gait: GaitReading;
@@ -58,6 +61,7 @@ interface SensorState {
   setIsSyncing: (status: boolean) => void;
   setWriteError: (message: string | null) => void;
   setFileName: (name: string) => void;
+  setSessionFolder: (folder: string | null) => void;
 
   bindNode: (nodeId: string, macAddress: string) => Promise<void>;
   loadBindings: () => Promise<void>;
@@ -75,7 +79,8 @@ export const useSensorStore = create<SensorState>((set, get) => ({
   isRecording: false,
   isSyncing: false,
   writeError: null,
-  fileName: 'DHT_Session_01',
+  fileName: 'session',
+  sessionFolder: null,
   nodeBindings: { GAIT: null, GAIT_LEFT: null, POSTURE: null, HYDRATION: null, ENVIRONMENT: null },
 
   // gait / gaitLeft / hydration are written in bulk by the orchestrator's 10 Hz UI pump (via
@@ -95,6 +100,7 @@ export const useSensorStore = create<SensorState>((set, get) => ({
   setIsSyncing: (status) => set({ isSyncing: status }),
   setWriteError: (message) => { if (get().writeError !== message) set({ writeError: message }); },
   setFileName: (name) => set({ fileName: name }),
+  setSessionFolder: (folder) => set({ sessionFolder: folder }),
 
   bindNode: async (nodeId, macAddress) => {
     const newBindings = { ...get().nodeBindings, [nodeId]: macAddress };

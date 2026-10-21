@@ -18,6 +18,10 @@ import { HEALTH_DATA_TYPES } from './src/config/HealthConnectRegistry';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
 import { GaitCard, HydrationCard, PostureCard, EnvironmentCard, NodeStatsLine } from './src/components/NodeCards';
+import { LabelPanel } from './src/components/LabelPanel';
+import { TodayScreen } from './src/screens/TodayScreen';
+import notifee from '@notifee/react-native';
+import { handleNotificationEvent } from './src/health/notify';
 import { SessionManagerScreen } from './src/screens/SessionManagerScreen';
 import { MapScreen } from './src/screens/MapScreen';
 import { FitDataManagerScreen } from './src/screens/FitDataManagerScreen';
@@ -94,7 +98,7 @@ export default function App() {
   const [isMapVisible, setMapVisible] = useState(false);
 
   // Fit tab / Health Connect
-  const [activeTab, setActiveTab] = useState<'sensors' | 'fit'>('sensors');
+  const [activeTab, setActiveTab] = useState<'sensors' | 'today' | 'fit'>('sensors');
   const [isFitManagerVisible, setFitManagerVisible] = useState(false);
   const [hcStatus, setHcStatus] = useState<{ available: boolean; reason?: string } | null>(null);
   const {
@@ -102,6 +106,9 @@ export default function App() {
     autoSyncEnabled, syncIntervalMinutes, fitFileNameOverride,
     setAutoSyncEnabled, setSyncIntervalMinutes, setFitFileNameOverride, loadFitSettings,
   } = useFitStore();
+
+  // Alert feedback buttons pressed while the app is open (index.js handles the background case).
+  useEffect(() => notifee.onForegroundEvent(handleNotificationEvent), []);
 
   useEffect(() => {
     const bootSequence = async () => {
@@ -209,13 +216,7 @@ export default function App() {
   };
 
   const beginRecording = async () => {
-    const { gpsError, renamedTo } = await startRecordingSession();
-    if (renamedTo) {
-      Alert.alert(
-        "New Session File Started",
-        `"${fileName}" already existed with an older column layout, so recording continues in a new file: ${renamedTo}.csv — your old file was left untouched.`
-      );
-    }
+    const { gpsError } = await startRecordingSession();
     if (gpsError) {
       Alert.alert("GPS Tracking Unavailable", `Recording started, but GPS tracking could not start: ${gpsError}`);
     }
@@ -230,7 +231,7 @@ export default function App() {
         const names = notLive.map(id => NODES_BY_ID[id]?.name ?? id).join(', ');
         Alert.alert(
           "Node(s) Not Connected",
-          `${names} ${notLive.length > 1 ? 'are' : 'is'} active but not currently connected. Recording will log stale/zero values until it reconnects. Start anyway?`,
+          `${names} ${notLive.length > 1 ? 'are' : 'is'} active but not currently connected. Nothing is logged for it until it connects. Start anyway?`,
           [
             { text: "Cancel", style: "cancel" },
             { text: "Start Anyway", onPress: () => { beginRecording(); } },
@@ -240,8 +241,9 @@ export default function App() {
       }
       beginRecording();
     } else {
+      const folder = useSensorStore.getState().sessionFolder;
       stopRecordingSession()
-        .then(() => Alert.alert("Session Saved", `Data written to Downloads/GaitTwin/${fileName}/ (one CSV per node).`))
+        .then(() => Alert.alert("Session Saved", `Data written to Downloads/GaitTwin/${folder ?? ''}/ (one CSV per node).`))
         .catch((e) => Alert.alert("Save Problem", `The session may be incomplete: ${String(e?.message ?? e)}`));
     }
   };
@@ -303,6 +305,10 @@ export default function App() {
           <Text style={[styles.tabButtonText, activeTab === 'sensors' && styles.tabButtonTextActive]}>Sensors</Text>
           {activeTab === 'sensors' && <View style={styles.tabIndicator} />}
         </TouchableOpacity>
+        <TouchableOpacity style={styles.tabButton} onPress={() => setActiveTab('today')}>
+          <Text style={[styles.tabButtonText, activeTab === 'today' && styles.tabButtonTextActive]}>Today</Text>
+          {activeTab === 'today' && <View style={styles.tabIndicator} />}
+        </TouchableOpacity>
         <TouchableOpacity style={styles.tabButton} onPress={() => setActiveTab('fit')}>
           <Text style={[styles.tabButtonText, activeTab === 'fit' && styles.tabButtonTextActive]}>Fit</Text>
           {activeTab === 'fit' && <View style={styles.tabIndicator} />}
@@ -343,9 +349,12 @@ export default function App() {
               </View>
             );
           })}
+          <Text style={styles.gpsHint}>Battery level: not available (the node firmware doesn't report it).</Text>
         </View>
 
         {/* DATA CARDS */}
+        <LabelPanel />
+
         <Text style={styles.sectionHeader}>Live Core Metrics</Text>
 
         <GaitCard slice="gait" title="Gait Analysis Node (Right Foot)" />
@@ -436,7 +445,8 @@ export default function App() {
         {/* BACKGROUND RECORDER */}
         <View style={styles.recordSection}>
           <Text style={styles.sectionTitleWhite}>Synchronous Flight Logger</Text>
-          <TextInput style={styles.input} value={fileName} onChangeText={setFileName} placeholder="Enter custom CSV name" editable={!isRecording} />
+          <TextInput style={styles.input} value={fileName} onChangeText={setFileName} placeholder="Session label, e.g. morning_walk" editable={!isRecording} />
+          <Text style={styles.recordHint}>Each recording gets its own folder: date_time_label</Text>
           <TouchableOpacity style={[styles.recordButton, { backgroundColor: isRecording ? '#F44336' : '#4CAF50' }]} onPress={toggleRecordingSession}>
             <Text style={styles.buttonText}>{isRecording ? '🛑 STOP & FLUSH CSV' : '⏺️ START RECORDING'}</Text>
           </TouchableOpacity>
@@ -453,6 +463,8 @@ export default function App() {
         </View>
       </ScrollView>
       )}
+
+      {activeTab === 'today' && <TodayScreen />}
 
       {activeTab === 'fit' && (
       <ScrollView style={styles.scrollArea}>
@@ -613,6 +625,7 @@ const styles = StyleSheet.create({
   sectionCard: { backgroundColor: '#fff', padding: 15, borderRadius: 12, marginBottom: 20, elevation: 2 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2d3748', marginBottom: 10 },
   sectionTitleWhite: { fontSize: 16, fontWeight: 'bold', color: '#fff', marginBottom: 10 },
+  recordHint: { fontSize: 11, color: '#a0aec0', marginTop: -6, marginBottom: 12 },
   sectionHeader: { fontSize: 18, fontWeight: 'bold', color: '#2d3748', marginVertical: 10, paddingLeft: 5 },
   nodeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderColor: '#edf2f7' },
   nodeName: { fontSize: 15, fontWeight: '600', color: '#2d3748' },

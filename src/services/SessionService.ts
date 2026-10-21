@@ -1,12 +1,16 @@
 import RNFS from 'react-native-fs';
 import { GAITTWIN_DIR } from './SessionWriter';
+import { META_FILE, NON_SESSION_DIRS, readJson } from './SessionMeta';
 
 const SESSION_DIR = GAITTWIN_DIR;
 
 export interface SessionMetadata {
+  sessionId?: string;
   fileName: string;
+  label?: string;
   startTime: string;
   endTime?: string | null;
+  endedBy?: 'user' | 'recovered' | null;
   appVersion: string;
   nodeBindings: Record<string, string | null>;
 }
@@ -38,7 +42,8 @@ export const listSessions = async (): Promise<SessionInfo[]> => {
 
   const entries = await RNFS.readDir(SESSION_DIR);
 
-  const folders = entries.filter(e => e.isDirectory());
+  // FitData (band export) and daily (health summaries) live alongside the sessions but aren't sessions.
+  const folders = entries.filter(e => e.isDirectory() && !NON_SESSION_DIRS.includes(e.name));
   const folderSessions = await Promise.all(folders.map(async (entry): Promise<SessionInfo> => {
     const files = await RNFS.readDir(entry.path).catch(() => []);
     const csvs = files.filter(f => f.isFile() && f.name.endsWith('.csv'));
@@ -50,7 +55,7 @@ export const listSessions = async (): Promise<SessionInfo[]> => {
       streams: csvs.map(f => f.name.replace(/\.csv$/, '')),
       size: files.reduce((sum, f) => sum + (f.isFile() ? Number(f.size) : 0), 0),
       modifiedTime: new Date(newest),
-      metadata: await readMetadata(`${entry.path}/session.meta.json`, entry.name),
+      metadata: await readJson(`${entry.path}/${META_FILE}`),
     };
   }));
 

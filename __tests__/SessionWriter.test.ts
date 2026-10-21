@@ -1,5 +1,5 @@
 import RNFS from 'react-native-fs';
-import { sessionWriter, STREAM_HEADERS, cell } from '../src/services/SessionWriter';
+import { sessionWriter, sessionFolderName, STREAM_HEADERS, cell } from '../src/services/SessionWriter';
 
 // In-memory filesystem on top of the react-native-fs mock.
 let files: Record<string, string>;
@@ -64,12 +64,29 @@ test('a failed write is retried on the next flush without losing or reordering r
   expect(lines(`${dir}/gait.csv`)).toEqual([STREAM_HEADERS.gait, 'a', 'b']);
 });
 
-test('resuming a session folder whose files have an old header starts a new folder', async () => {
-  dirs.add('/mock/Downloads/GaitTwin/S4');
-  files['/mock/Downloads/GaitTwin/S4/gait.csv'] = 'old,header\n1,2\n';
-  const result = await sessionWriter.open('S4');
-  expect(result.renamed).toBe(true);
-  expect(result.name).toMatch(/^S4_/);
+test('every start gets a new date-named folder; a same-minute restart gets _2, never the old folder', async () => {
+  const at = new Date(2026, 9, 14, 10, 54);
+  const first = await sessionWriter.open('morning walk!', at);
+  expect(first.name).toBe('2026-10-14_1054_morning_walk');
+  sessionWriter.append('gait', 'R,1');
+  await sessionWriter.close();
+
+  const second = await sessionWriter.open('morning walk!', at);
+  expect(second.name).toBe('2026-10-14_1054_morning_walk_2');
+  await sessionWriter.flush();
+  expect(lines(`${first.dir}/gait.csv`)).toEqual([STREAM_HEADERS.gait, 'R,1']); // untouched
+});
+
+test('an empty label still gives a valid folder name', () => {
+  expect(sessionFolderName('  ', new Date(2026, 0, 2, 3, 4))).toBe('2026-01-02_0304_session');
+});
+
+test('files are written as UTF-8 without a byte-order mark', async () => {
+  const { dir } = await sessionWriter.open('bom');
+  sessionWriter.append('events', '1,APP,drink,,1,');
+  await sessionWriter.flush();
+  expect(files[`${dir}/events.csv`].charCodeAt(0)).not.toBe(0xfeff);
+  expect((RNFS.appendFile as jest.Mock).mock.calls.every((c: any[]) => c[2] === 'utf8')).toBe(true);
 });
 
 test('cell() leaves missing values empty instead of writing 0', () => {

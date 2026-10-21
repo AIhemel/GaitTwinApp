@@ -12,6 +12,7 @@ import {
 } from 'react-native-health-connect';
 import { HEALTH_DATA_TYPES, HealthDataTypeConfig } from '../config/HealthConnectRegistry';
 import { useFitStore } from '../store/FitStore';
+import { healthEngine } from '../health/engine';
 
 export { openHealthConnectSettings };
 
@@ -114,6 +115,8 @@ const appendFitRowsUnsafe = async (rows: FitRow[]) => {
   await RNFS.appendFile(csvPath, content, 'utf8');
   await RNFS.scanFile(csvPath);
   await updateFitMeta(metaPath, fileName, rows);
+  // Heart rate, SpO2, steps and sleep feed the on-phone daily analysis (and its alerts).
+  healthEngine.onFitRows(rows);
 };
 
 // runSyncTick fires one syncOneType() per granted type in parallel, and every type writes to the
