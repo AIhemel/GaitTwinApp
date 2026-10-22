@@ -8,6 +8,8 @@ module.exports = {
   Svg: mk('Svg'),
   Rect: mk('Rect'),
   Line: mk('Line'),
+  Path: mk('Path'),
+  Circle: mk('Circle'),
   G: mk('G'),
   Text: mk('SvgText'),
 };

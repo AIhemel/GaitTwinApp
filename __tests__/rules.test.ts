@@ -4,6 +4,7 @@ import { ResolvedRule } from '../src/store/AlertRulesStore';
 import { EnvMinute } from '../src/health/daySummary';
 import { HeartData } from '../src/health/heart';
 import { Stride } from '../src/health/gait';
+import { gaitWindows } from '../src/health/symmetry';
 
 const MIN = 60000;
 const DAY0 = new Date(2026, 9, 14).getTime();
@@ -19,6 +20,7 @@ const base = (now: number): RuleInputs => ({
   now, env: [], heart: noHeart(), strides: { R: [], L: [] }, labels: [], drinks: [], hydrationTracked: false,
   totalMl: null, targetMl: 2000, wakeAt: at(7), posture: { windowStart: null, pose: null, poseOnset: null },
   gaitWalksAlertedToday: 0, date: '2026-10-14',
+  baselines: null, minBaselineDays: 3, place: 'indoor', sleepMeanHr: null,
 });
 const ids = (fs: Finding[]) => fs.map((f) => f.ruleId).sort();
 
@@ -189,5 +191,64 @@ describe('gait asymmetry', () => {
     inp.strides = walk(at(9) - 160 * 1100, 160, 66, 60);
     inp.gaitWalksAlertedToday = 2;
     expect(evaluateRules(inp, defaults())[0].severity).toBe('warning');
+  });
+});
+
+// Each finding says when its event began (onset) and when the rule's definition was first met (due),
+// for the evaluation's "time from event to notification".
+describe('event timing', () => {
+  const find = (inp: RuleInputs, id: string) => evaluateRules(inp, defaults()).find((f) => f.ruleId === id)!;
+
+  test('PM2.5: the first over-limit minute, and the tick the 5-min mean first crossed', () => {
+    const inp = base(at(12, 10));
+    inp.env = envMinutes(at(12, 0), 10, { pm25: 200 });
+    // the 5-min mean needs 3 of its 5 minutes: first possible at 12:02
+    expect(find(inp, 'EN-1')).toMatchObject({ onsetMs: at(12, 0), dueMs: at(12, 2) });
+  });
+
+  test('heart rate: the run of high minutes, due once it lasted the required 10 min', () => {
+    const inp = base(at(15, 30));
+    inp.heart = { ...noHeart(), hrByMinute: new Map([...Array(25)].map((_, i) => [at(15, 4) + i * MIN, 125])), stepsByMinute: new Map() };
+    expect(find(inp, 'HR-1')).toMatchObject({ onsetMs: at(15, 4), dueMs: at(15, 14) });
+    inp.heart.spo2 = [{ t: at(15, 5), v: 88 }, { t: at(15, 12), v: 87 }];
+    expect(find(inp, 'SP-1')).toMatchObject({ onsetMs: at(15, 5), dueMs: at(15, 12) });
+  });
+
+  test('water: dry spell from the last drink; behind on pace since before a small drink; goal reached by a drink', () => {
+    const inp = base(at(15));
+    inp.hydrationTracked = true;
+    inp.drinks = [{ t: at(11), ml: null }];
+    expect(find(inp, 'HY-1')).toMatchObject({ onsetMs: at(11), dueMs: at(13, 30) });
+    // 300 mL at 14:30 wasn't enough to catch up: behind since 0.15 x 16 h after waking (07:00 + 2 h 24)
+    inp.drinks = [{ t: at(14, 30), ml: 300 }];
+    inp.totalMl = 300;
+    expect(find(inp, 'HY-2')).toMatchObject({ onsetMs: at(9, 24), dueMs: at(9, 24) });
+    inp.drinks = [{ t: at(10), ml: 1000 }, { t: at(13), ml: 1100 }];
+    inp.totalMl = 2100;
+    expect(find(inp, 'HY-3')).toMatchObject({ onsetMs: at(13), dueMs: at(13) });
+  });
+
+  test('posture: from the pose (or sitting down) plus the minutes the rule waits', () => {
+    const inp = base(at(10, 55));
+    inp.posture = { windowStart: at(10, 0), pose: 'SLOUCH', poseOnset: at(10, 30) };
+    expect(find(inp, 'PO-1')).toMatchObject({ onsetMs: at(10, 30), dueMs: at(10, 50) });
+    expect(find(inp, 'PO-2')).toMatchObject({ onsetMs: at(10, 0), dueMs: at(10, 50) });
+  });
+
+  test('uneven steps: from the first uneven block to the end of the last one', () => {
+    const s0 = at(9) - 160 * 1100;
+    const mk = (i: number, stance: number, off: number): Stride => ({
+      hs_ms: s0 + i * 1100 + off, stride_s: 1.1, stance_pct: stance, stance_s: 0.7, swing_s: 0.4,
+      stance_imu_pct: stance, stance_imu_s: 0.7, swing_imu_s: 0.4, pushoff_pct: 65, tilt_range_deg: 55,
+      pitch_range_deg: 40, peak_acc_ms2: 30, heel_share: 0.4, met1_share: 0.3, met5_share: 0.3,
+      hs_imu_ms: s0 + i * 1100 + off, to_imu_ms: 0, to_fsr_ms: 0, bout: 0,
+    });
+    const inp = base(at(9, 1));
+    inp.strides = { R: [...Array(160)].map((_, i) => mk(i, 66, 0)), L: [...Array(160)].map((_, i) => mk(i, 60, 550)) };
+    // the two blocks of 60 steady right strides the rule compared
+    const wins = gaitWindows(inp.strides.R, inp.strides.L, 60);
+    expect(wins).toHaveLength(2);
+    expect(find(inp, 'GA-1')).toMatchObject({ onsetMs: wins[0].start, dueMs: wins[1].end });
+    expect(wins[1].end).toBeLessThan(inp.now);
   });
 });

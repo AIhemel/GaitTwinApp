@@ -3,6 +3,8 @@ import { Modal, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacit
 import { RULE_DEFS, RuleDef, RuleParam, SEVERITIES, Severity, DEFAULT_POLICY } from '../config/alertRules';
 import { resolveRule, resolvePolicy, useAlertRulesStore, DEFAULT_ANALYSIS } from '../store/AlertRulesStore';
 import { sendTestNotification } from '../health/notify';
+import { healthEngine } from '../health/engine';
+import { useHealthStore } from '../store/HealthStore';
 
 // "Alerts & reminders": every rule's on/off, severity, cooldown and thresholds are editable here; edits
 // apply at the next check (rules read their settings each time they run). Plus the profile and the
@@ -103,6 +105,10 @@ export const AlertSettingsScreen = ({ visible, onClose }: { visible: boolean; on
   const setPolicy = useAlertRulesStore((s) => s.setPolicy);
   const policy = resolvePolicy();
   const [tested, setTested] = useState(false);
+  const baselines = useHealthStore((s) => s.baselines);
+  const lastImport = useHealthStore((s) => s.lastImport);
+  const setPolicyAndRelearn = (patch: Parameters<typeof setPolicy>[0]) =>
+    setPolicy(patch).then(() => healthEngine.refreshBaselines()).catch(() => {});
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -151,6 +157,24 @@ export const AlertSettingsScreen = ({ visible, onClose }: { visible: boolean; on
             <TouchableOpacity style={styles.testBtn} onPress={() => { sendTestNotification().then(() => setTested(true)).catch(() => {}); }}>
               <Text style={styles.testText}>{tested ? 'Sent — check the notification shade' : 'Send a test notification'}</Text>
             </TouchableOpacity>
+          </View>
+
+          <Text style={styles.section}>Learning your usual</Text>
+          <View style={styles.card}>
+            <Text style={styles.desc}>
+              Personal comparisons ("your usual") come from your own recent days: median and spread of each measure.
+              {baselines ? ` So far: ${baselines.days.length} day${baselines.days.length === 1 ? '' : 's'} of data${baselines.days.length ? ` (${baselines.days[0]} to ${baselines.days[baselines.days.length - 1]})` : ''}.` : ' Nothing learned yet.'}
+            </Text>
+            {lastImport && (
+              <Text style={styles.desc}>
+                Thesis days imported at start-up: {lastImport.imported.join(', ') || 'none'}
+                {lastImport.skipped.length ? ` (not replaced, already recorded by the app: ${lastImport.skipped.join(', ')})` : ''}.
+              </Text>
+            )}
+            <NumberField label="Personal alerts start after" unit="days" value={policy.minBaselineDays} min={1} max={14}
+              onCommit={(v) => setPolicyAndRelearn({ minBaselineDays: v as number })} />
+            <NumberField label="Learn from the last" unit="days" value={policy.baselineWindowDays} min={3} max={60}
+              onCommit={(v) => setPolicyAndRelearn({ baselineWindowDays: v as number })} />
           </View>
 
           {DOMAINS.map((d) => (

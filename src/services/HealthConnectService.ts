@@ -115,8 +115,13 @@ const appendFitRowsUnsafe = async (rows: FitRow[]) => {
   await RNFS.appendFile(csvPath, content, 'utf8');
   await RNFS.scanFile(csvPath);
   await updateFitMeta(metaPath, fileName, rows);
-  // Heart rate, SpO2, steps and sleep feed the on-phone daily analysis (and its alerts).
-  healthEngine.onFitRows(rows);
+  // Heart rate, SpO2, steps and sleep feed the on-phone daily analysis (and its alerts). The rows are
+  // already saved; an analysis error must not make the sync look failed.
+  try {
+    healthEngine.onFitRows(rows);
+  } catch (e) {
+    console.warn('Health engine (fit rows) failed:', e);
+  }
 };
 
 // runSyncTick fires one syncOneType() per granted type in parallel, and every type writes to the

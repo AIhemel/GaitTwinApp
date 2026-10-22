@@ -59,8 +59,13 @@ export const logLabel = async (event: string, note = '', now: number = Date.now(
   // events.csv detail is ';'-separated key=value, so commas are dropped there; labels.csv keeps the text.
   sessionWriter.append('events', `${now},APP,${event},,${now},${n ? `note=${n.replace(/[,;]/g, ' ')}` : ''}`);
   useLabelStore.getState().setLastTap({ id: event, at: now });
-  healthEngine.onLabel(now, event, n);
-  await appendDaily(LABELS_FILE, LABELS_HEADER, `${now},${event},${csvText(n)}`, now);
+  const written = appendDaily(LABELS_FILE, LABELS_HEADER, `${now},${event},${csvText(n)}`, now);
+  try {
+    healthEngine.onLabel(now, event, n); // analysis only: never in the way of the label being saved
+  } catch (e) {
+    console.warn('Health engine (label) failed:', e);
+  }
+  await written;
 };
 
 const saveActive = (a: LabelState['active']) =>

@@ -2,7 +2,7 @@ import notifee from '@notifee/react-native';
 import { deliverAlert, resetAlertStateForTests, AlertRequest, ALERTS_HEADER, handleNotificationEvent, snoozeRule, RESPONSES_HEADER } from '../src/health/notify';
 import { EventType } from '@notifee/react-native';
 import { useAlertRulesStore } from '../src/store/AlertRulesStore';
-import { resetDailyStoreForTests } from '../src/services/DailyStore';
+import { parseCsvText, resetDailyStoreForTests } from '../src/services/DailyStore';
 import { installMemFs } from '../testUtils/memfs';
 
 let fs: ReturnType<typeof installMemFs>;
@@ -35,6 +35,20 @@ test('delivers, logs the alert with its values and parameters', async () => {
   expect(rows[1]).toContain(',DQ-1,GAIT:silent,info,1,,');
   expect(rows[1]).toContain('silent_min=2.1');
   expect(rows[1]).toContain('silentMinGait=2');
+});
+
+test('the event times go in the last two columns; an older file gets the new header', async () => {
+  const dir = '/mock/Downloads/GaitTwin/daily/2026-10-21';
+  fs.dirs.add(dir);
+  const OLD = 'alert_id,utc_ms,rule_id,target,severity,delivered,suppressed_reason,title,message,values,params';
+  fs.files[`${dir}/alerts.csv`] = `${OLD}\nold-1,${at(9)},HY-1,gap,nudge,1,,No water,Drink,gap_h=2.5,gapHours=2.5\n`;
+  await deliverAlert(req({ onsetMs: at(9, 58), dueMs: at(10) }), at(10, 1));
+  await flush();
+  const rows = alertRows();
+  expect(rows[0]).toBe(ALERTS_HEADER);
+  expect(rows[1]).toBe(`old-1,${at(9)},HY-1,gap,nudge,1,,No water,Drink,gap_h=2.5,gapHours=2.5`); // kept as it was
+  expect(rows[2].endsWith(`,${at(9, 58)},${at(10)}`)).toBe(true);
+  expect(parseCsvText(rows[2])[0]).toHaveLength(ALERTS_HEADER.split(',').length);
 });
 
 test('the same rule + target is silent during its cooldown, then fires again', async () => {

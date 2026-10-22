@@ -19,6 +19,8 @@ export interface DqFinding {
   title: string;
   body: string;
   values: Record<string, number | string | null>;
+  onsetMs: number | null; // last packet (silent) / start of the measured minute (low rate)
+  dueMs: number | null;
 }
 
 export const NODE_LABELS: Record<string, string> = {
@@ -52,6 +54,7 @@ export const evaluateDataQuality = (
         title: `${name}: no data for ${m} min`,
         body: `No data from the ${name.toLowerCase()} for ${m} min while recording. Check it is switched on and near the phone; the app reconnects automatically when it comes back.`,
         values: { silent_min: +silentMin.toFixed(1), connected: n.connectedSince === null ? 0 : 1 },
+        onsetMs: since, dueMs: since + params[SILENT_PARAM[n.kind]] * 60000,
       });
       continue;
     }
@@ -66,6 +69,7 @@ export const evaluateDataQuality = (
         title: `${name} streaming at ${hz} Hz`,
         body: `The ${name.toLowerCase()} is sending ${hz} samples/s instead of about ${params.expectedGaitHz}${loss !== null ? ` (${loss} % of the data lost)` : ''}. Try keeping the phone closer to that foot, e.g. in a pocket on the same side.`,
         values: { rate_hz: +n.rateHz60.toFixed(1), loss_pct: loss, expected_hz: params.expectedGaitHz },
+        onsetMs: now - 60000, dueMs: now, // the rate is measured over the last minute only
       });
     }
   }

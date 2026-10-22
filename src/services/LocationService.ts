@@ -68,8 +68,12 @@ const recordPosition = (latitude: number, longitude: number, timestamp: number, 
 
   const { currentWeather } = store;
   // gps.csv: one row per fix, stamped with the fix's own time (Unix ms), not the time it was logged.
-  healthEngine.onGps(timestamp, speed);
   sessionWriter.append('gps', `${timestamp},${latitude.toFixed(7)},${longitude.toFixed(7)},${cell(accuracy, 1)},${cell(speed, 2)},${cell(currentWeather.temperatureC, 1)},${cell(currentWeather.humidityPct, 1)}`);
+  try {
+    healthEngine.onGps(timestamp, speed); // analysis only, after the row is recorded
+  } catch (e) {
+    console.warn('Health engine (gps) failed:', e);
+  }
   store.addTrackPoint({
     latitude,
     longitude,

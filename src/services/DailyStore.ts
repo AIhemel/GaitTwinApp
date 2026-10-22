@@ -23,6 +23,18 @@ export const csvText = (s: string | null | undefined): string => {
 const knownFiles = new Set<string>();
 let chain: Promise<void> = Promise.resolve();
 
+// A file written by an older app version whose header lacks columns added since (always at the end):
+// the header line is replaced, so the file stays readable as one table (older rows just have empty
+// trailing cells). Any other mismatch is left alone.
+const upgradeHeader = async (path: string, header: string) => {
+  const head = (await RNFS.read(path, 4096, 0, 'utf8')).split('\n')[0].replace(/\r$/, '');
+  if (head === header || !header.startsWith(`${head},`)) return;
+  const text = await RNFS.readFile(path, 'utf8');
+  await RNFS.writeFile(`${path}.tmp`, header + text.slice(text.indexOf('\n')), 'utf8');
+  if (await RNFS.exists(path)) await RNFS.unlink(path);
+  await RNFS.moveFile(`${path}.tmp`, path);
+};
+
 // Appends one row to today's (or `ms`'s day's) file, writing the header first if the file is new.
 // Writes are serialized, so concurrent appends can't interleave or double the header.
 export const appendDaily = (file: string, header: string, row: string, ms: number = Date.now()): Promise<void> => {
@@ -33,6 +45,7 @@ export const appendDaily = (file: string, header: string, row: string, ms: numbe
     if (!knownFiles.has(path)) {
       if (!(await RNFS.exists(dir))) await RNFS.mkdir(dir);
       if (!(await RNFS.exists(path))) data = `${header}\n${data}`;
+      else await upgradeHeader(path, header);
     }
     await RNFS.appendFile(path, data, 'utf8');
     knownFiles.add(path); // only once the header is really on disk

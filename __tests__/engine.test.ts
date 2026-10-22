@@ -1,5 +1,7 @@
 import RNFS from 'react-native-fs';
 import { HealthEngine } from '../src/health/engine';
+import { MINUTE_HEADER } from '../src/health/daySummary';
+import { useHealthStore } from '../src/store/HealthStore';
 import { resetDailyStoreForTests, localDate } from '../src/services/DailyStore';
 import { installMemFs } from '../testUtils/memfs';
 
@@ -62,4 +64,26 @@ test('a pose held across midnight continues into the new day from 00:00', async 
   e.stop();
   expect(next.date).toBe('2026-10-15');
   expect(next.posture?.byPose.STRAIGHT).toBeCloseTo(30, 3);
+});
+
+test('your usual is learned from the previous days on disk and shown in today\'s summary', async () => {
+  const D = '/mock/Downloads/GaitTwin/daily';
+  fs.dirs.add(D);
+  for (const [i, date] of ['2026-10-11', '2026-10-12', '2026-10-13'].entries()) {
+    fs.dirs.add(`${D}/${date}`);
+    const rows = [...Array(60)].map((_, k) => {
+      const c: Record<string, string> = Object.fromEntries(MINUTE_HEADER.split(',').map((h: string) => [h, '']));
+      Object.assign(c, { minute: `${date}T08:${String(k).padStart(2, '0')}:00.000Z`, hr: String(72 + (k % 2)), steps_band: '0', hr_cadence_lock: '0', context: 'awake', pm25: '55' });
+      return MINUTE_HEADER.split(',').map((h: string) => c[h]).join(',');
+    });
+    fs.files[`${D}/${date}/minute_summary.csv`] = [MINUTE_HEADER, ...rows].join('\n') + '\n';
+    fs.files[`${D}/${date}/daily_summary.json`] = JSON.stringify({ date, gait: { stepsBand: 6000 + i * 100 }, heart: { awakeMeanHr: 85, sleepMeanHr: 62 + i }, hydration: { totalMl: 1800 }, posture: { uprightPct: 60 } });
+  }
+  const e = new HealthEngine();
+  await e.start();
+  const today = await e.compute();
+  e.stop();
+  expect(useHealthStore.getState().baselines!.days).toEqual(['2026-10-11', '2026-10-12', '2026-10-13']);
+  expect(JSON.parse(fs.files[`${D}/baselines.json`]).sittingHr.median).toBe(72.5);
+  expect(today.usual).toMatchObject({ days: 3, steps: 6100, sleepMeanHr: 63, sittingHr: 72.5, waterMl: 1800, uprightPct: 60, pm25Indoor: 55 });
 });

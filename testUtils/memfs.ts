@@ -10,7 +10,10 @@ export const installMemFs = () => {
   const touch = (p: string) => { mtimes[p] = Date.now(); };
 
   (RNFS.exists as jest.Mock).mockImplementation(async (p: string) => p in files || dirs.has(p));
-  (RNFS.mkdir as jest.Mock).mockImplementation(async (p: string) => { dirs.add(p); });
+  // like RNFS on Android (File.mkdirs): missing parent folders are created too
+  (RNFS.mkdir as jest.Mock).mockImplementation(async (p: string) => {
+    for (let d = p; d.lastIndexOf('/') > 0; d = parentOf(d)) dirs.add(d);
+  });
   (RNFS.appendFile as jest.Mock).mockImplementation(async (p: string, d: string) => { files[p] = (files[p] ?? '') + d; touch(p); });
   (RNFS.writeFile as jest.Mock).mockImplementation(async (p: string, d: string) => { files[p] = d; touch(p); });
   (RNFS.readFile as jest.Mock).mockImplementation(async (p: string) => {

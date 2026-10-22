@@ -32,7 +32,7 @@ export const RULE_DEFS: RuleDef[] = [
   // ---- gait
   {
     id: 'GA-1', domain: 'gait', label: 'Uneven steps during a walk', severity: 'nudge', enabled: true, cooldownMin: 60,
-    description: 'Compares the left and right insole over blocks of steady strides while you walk (each foot uses its own clock, so this works even when the insoles are not in sync). Notifies when a measure differs by more than its limit in consecutive blocks; becomes a warning when it happens on several walks in a day. The limits below are fixed values from the thesis data.',
+    description: 'Compares the left and right insole over blocks of steady strides while you walk (each foot uses its own clock, so this works even when the insoles are not in sync). Notifies when a measure differs by more than its limit in consecutive blocks; becomes a warning when it happens on several walks in a day. Once your own walks cover enough days (see "Learning your usual" in Notifications), a difference only counts when it is also beyond your usual left/right difference by more than the spread factor below; before that, the fixed limits apply.',
     params: [
       P('windowStrides', 'Strides per foot per block', 'strides', 60, 20, 200),
       P('consecutiveWindows', 'Uneven blocks in a row', 'blocks', 2, 1, 5),
@@ -43,6 +43,7 @@ export const RULE_DEFS: RuleDef[] = [
       P('floorTilt', 'Foot tilt range difference limit', '%', 15, 1, 80),
       P('floorStride', 'Stride time difference limit', '%', 3, 1, 30),
       P('walksForWarning', 'Warning when it happens on this many walks a day', 'walks', 3, 1, 10),
+      P('madK', 'Beyond your usual by more than (× your usual spread)', '×', 4, 1, 10),
     ],
   },
   // ---- hydration
@@ -103,6 +104,11 @@ export const RULE_DEFS: RuleDef[] = [
     description: 'Sustained loud sound at a level where hearing protection is advised. Takes the place of the loud note when both apply.',
     params: [P('dba', 'Level', 'dBA', 85, 60, 130), P('windowMin', 'Averaged over', 'min', 30, 1, 240)],
   },
+  {
+    id: 'EN-6', domain: 'environment', label: 'Unusual for this kind of place', severity: 'info', enabled: true, cooldownMin: 60,
+    description: 'PM2.5, CO₂ or noise far outside what is usual for you in this kind of place (indoors, outdoors, in a vehicle), learned from your recent days. Catches a smoky kitchen or a closed room even when the level is below the fixed limits. Needs a few days of data first.',
+    params: [P('robustZ', 'More unusual than (robust z)', 'z', 4, 2, 10), P('windowMin', 'Averaged over', 'min', 5, 1, 60), P('minMinutes', 'Usual needs at least', 'min of past data', 60, 10, 600)],
+  },
   // ---- heart (from the band via Health Connect: arrives with each sync, every 5-15 min)
   {
     id: 'HR-1', domain: 'heart', label: 'High heart rate at rest', severity: 'warning', enabled: true, cooldownMin: 60,
@@ -118,6 +124,16 @@ export const RULE_DEFS: RuleDef[] = [
     id: 'HR-3', domain: 'heart', label: 'Low heart rate while awake', severity: 'warning', enabled: true, cooldownMin: 60,
     description: 'Heart rate below the level for this long outside sleep and quiet hours.',
     params: [P('bpm', 'Below', 'bpm', 40, 25, 60), P('minutes', 'For', 'min', 10, 3, 60), P('maxAgeMin', 'Only from data in the last', 'min', 30, 10, 120)],
+  },
+  {
+    id: 'HR-4', domain: 'heart', label: 'Heart rate higher than your usual at rest', severity: 'nudge', enabled: true, cooldownMin: 60,
+    description: 'Compares your heart rate while sitting still with your own usual for sitting (learned from your recent days), so it adapts to you rather than using one number for everyone. Needs a few days of data first.',
+    params: [P('robustZ', 'More unusual than (robust z)', 'z', 4, 2, 10), P('minutes', 'For', 'min', 15, 5, 60), P('maxAgeMin', 'Only from data in the last', 'min', 30, 10, 120)],
+  },
+  {
+    id: 'HR-5', domain: 'heart', label: 'Sleeping heart rate above your usual', severity: 'info', enabled: true, cooldownMin: 60,
+    description: 'A morning note when last night\'s average sleeping heart rate was clearly above your usual (the median of your recent nights). This is often seen with stress, illness, heat or alcohol; it is information, not a diagnosis.',
+    params: [P('deltaBpm', 'More than', 'bpm above usual', 5, 2, 20), P('nights', 'Usual = median of the last', 'nights', 7, 3, 14)],
   },
   {
     id: 'SP-1', domain: 'heart', label: 'Low blood oxygen (SpO₂)', severity: 'warning', enabled: true, cooldownMin: 60,
@@ -147,6 +163,8 @@ export const RULE_DEFS_BY_ID: Record<string, RuleDef> = Object.fromEntries(RULE_
 
 export interface NotificationPolicy {
   maxNonUrgentPerDay: number;
+  minBaselineDays: number; // personal ("your usual") rules switch on after this many days of data
+  baselineWindowDays: number; // the usual is learned from this many recent days
   quietHoursEnabled: boolean;
   quietStartHour: number; // local hour, 0-23; only 'urgent' notifies inside quiet hours
   quietEndHour: number;
@@ -155,6 +173,8 @@ export interface NotificationPolicy {
 
 export const DEFAULT_POLICY: NotificationPolicy = {
   maxNonUrgentPerDay: 8,
+  minBaselineDays: 3,
+  baselineWindowDays: 14,
   quietHoursEnabled: true,
   quietStartHour: 23,
   quietEndHour: 7,

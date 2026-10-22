@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-14",
+  "imported": true,
+  "source": "thesis pipeline (day_7)",
+  "gait": {
+    "stepsBand": 146.0,
+    "stepsInsole": 224.0,
+    "strides": {
+      "R": 112,
+      "L": 111
+    }
+  },
+  "heart": {
+    "awakeMeanHr": 94.0,
+    "sleepMeanHr": null
+  },
+  "hydration": {
+    "totalMl": 336.0
+  },
+  "posture": {
+    "uprightPct": 60.0
+  }
+}

@@ -8,9 +8,11 @@ import { useHealthStore } from '../store/HealthStore';
 // Every alert goes through here: policy (cooldown, quiet hours, daily cap) -> notification -> log.
 // The log (daily/YYYY-MM-DD/alerts.csv) records suppressed alerts too, with the reason, plus the
 // rule parameters in force at that moment — it is the thesis's evaluation data for the alerts.
+// event_onset_ms / event_due_ms: when the event began and when the rule's definition was first met,
+// on the data's own clock (see rules.ts); utc_ms - event_due_ms is the delay to the notification.
 
 export const ALERTS_FILE = 'alerts.csv';
-export const ALERTS_HEADER = 'alert_id,utc_ms,rule_id,target,severity,delivered,suppressed_reason,title,message,values,params';
+export const ALERTS_HEADER = 'alert_id,utc_ms,rule_id,target,severity,delivered,suppressed_reason,title,message,values,params,event_onset_ms,event_due_ms';
 // The user's answer to an alert (notification buttons or the Today tab), in the alert's day folder.
 export const RESPONSES_FILE = 'alert_responses.csv';
 export const RESPONSES_HEADER = 'alert_id,utc_ms,response,rule_id';
@@ -26,6 +28,8 @@ export interface AlertRequest {
   body: string;
   values: Record<string, number | string | null>;
   params: Record<string, number>;
+  onsetMs?: number | null;
+  dueMs?: number | null;
 }
 
 export interface AlertResult {
@@ -86,6 +90,8 @@ const inQuietHours = (ms: number, start: number, end: number) => {
   return start <= end ? h >= start && h < end : h >= start || h < end; // e.g. 23 -> 7 wraps midnight
 };
 
+const timeCell = (t: number | null | undefined) => (t === null || t === undefined || !Number.isFinite(t) ? '' : String(Math.round(t)));
+
 const kv = (o: Record<string, number | string | null>) =>
   Object.entries(o).map(([k, v]) => `${k}=${v === null ? '' : typeof v === 'number' ? +v.toFixed(3) : v}`).join(';');
 
@@ -135,7 +141,7 @@ export const deliverAlert = async (req: AlertRequest, now: number = Date.now()):
 
   appendDaily(ALERTS_FILE, ALERTS_HEADER,
     [id, now, req.ruleId, req.target, req.severity, reason ? 0 : 1, reason ?? '', csvText(req.title), csvText(req.body),
-      csvText(kv(req.values)), csvText(kv(req.params))].join(','), now)
+      csvText(kv(req.values)), csvText(kv(req.params)), timeCell(req.onsetMs), timeCell(req.dueMs)].join(','), now)
     .then(() => useHealthStore.getState().bumpAlerts())
     .catch(() => {});
   return { id, delivered: !reason, reason };

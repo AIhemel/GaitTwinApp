@@ -1,19 +1,23 @@
 import RNFS from 'react-native-fs';
-import { GaitSample, GaitStream, Stride } from './gait';
+import { GaitSample, GaitStream, STRIDE_COLS, Stride } from './gait';
+import { FSR_FILE, FSR_HEADER, FsrMinute, FsrMinuteAccumulator, fsrRow } from './fsr';
+import { readPastDay, readStrides } from './history';
 import { BottleSample } from './bottle';
 import { PoseEvent } from './posture';
 import { TEMP_WARMUP_MS } from './environment';
 import { FitRowLite, buildHeartData, parseFitCsv } from './heart';
 import { DayInputs, DaySummary, EnvMinute, MINUTE_HEADER, computeDay } from './daySummary';
 import { DAILY_DIR, appendDaily, dailyDir, localDate } from '../services/DailyStore';
-import { GAITTWIN_DIR } from '../services/SessionWriter';
+import { GAITTWIN_DIR, sessionWriter } from '../services/SessionWriter';
 import { readJson, writeJsonAtomic, writeTextAtomic } from '../services/SessionMeta';
 import { LABELS_FILE } from '../services/Labels.constants';
-import { ResolvedRule, hydrationTargetMl, resolveRule, useAlertRulesStore } from '../store/AlertRulesStore';
+import { ResolvedRule, hydrationTargetMl, resolvePolicy, resolveRule, useAlertRulesStore } from '../store/AlertRulesStore';
 import { RULE_DEFS } from '../config/alertRules';
 import { RuleInputs, evaluateRules } from './rules';
+import { Baselines, PastDay, Place, buildBaselines } from './baselines';
+import { contextAt, contextSpans } from './context';
+import { importThesisDays } from './importDays';
 import { deliverAlert } from './notify';
-import { sessionWriter } from '../services/SessionWriter';
 import { useHealthStore } from '../store/HealthStore';
 
 // The on-phone analysis engine. Receives every live stream from the orchestrator (whether or not a
@@ -23,15 +27,13 @@ import { useHealthStore } from '../store/HealthStore';
 //     minute_summary.csv   one row per minute, the pipeline's minute_table layout
 //     strides_R.csv / strides_L.csv   every detected stride (appended as detected)
 //     bottle.csv           live bottle samples (appended each minute)
+//     fsr_minutes.csv      per foot and minute: pressure-sensor statistics for the Data tab
 //     engine_state.json    the rest of today's state, so an app restart loses nothing
 //     labels.csv, alerts.csv (written by Labels / notify)
 
 const MIN = 60000;
 const COMPUTE_EVERY_MS = 5 * MIN;
-const STRIDE_COLS: (keyof Stride)[] = [
-  'hs_ms', 'stride_s', 'stance_pct', 'stance_s', 'swing_s', 'stance_imu_pct', 'stance_imu_s', 'swing_imu_s', 'pushoff_pct',
-  'tilt_range_deg', 'pitch_range_deg', 'peak_acc_ms2', 'heel_share', 'met1_share', 'met5_share', 'hs_imu_ms', 'to_imu_ms', 'to_fsr_ms', 'bout',
-];
+export { STRIDE_COLS };
 const STRIDE_HEADER = STRIDE_COLS.join(',');
 const BOTTLE_HEADER = 't,fused_ml,weight_g,cap_ml';
 const FIT_DIR = `${GAITTWIN_DIR}/FitData`;
@@ -68,17 +70,25 @@ export class HealthEngine {
     R: new GaitStream((r) => this.onStrideWindow('R', r.strides, r.gate.gated, r.fromMs, r.toMs)),
     L: new GaitStream((r) => this.onStrideWindow('L', r.strides, r.gate.gated, r.fromMs, r.toMs)),
   };
+  private fsr = {
+    R: new FsrMinuteAccumulator('R', (m) => this.onFsrMinute(m)),
+    L: new FsrMinuteAccumulator('L', (m) => this.onFsrMinute(m)),
+  };
   private started = false;
   private minuteTimer: ReturnType<typeof setInterval> | null = null;
   private lastCompute = 0;
   private lastSummary: DaySummary | null = null;
   private gaitAlertedWalks = new Set<string>(); // GA-1 targets alerted today (warning after N walks)
+  private baselines: Baselines | null = null;
   private ruleTimer: ReturnType<typeof setTimeout> | null = null;
 
   async start() {
     if (this.started) return;
     this.started = true;
     await this.loadDay(this.date);
+    const imp = await importThesisDays().catch((e) => { console.warn('Thesis day import failed:', e); return null; });
+    if (imp && (imp.imported.length || imp.skipped.length)) useHealthStore.getState().setLastImport(imp);
+    await this.refreshBaselines();
     await this.compute();
     this.minuteTimer = setInterval(() => { this.tick().catch((e) => console.warn('Health engine tick failed:', e)); }, MIN);
   }
@@ -101,6 +111,11 @@ export class HealthEngine {
   onGait(side: 'R' | 'L', s: GaitSample) {
     this.gaitMinutes[side].add(minuteOf(s.t));
     this.streams[side].push(s);
+    this.fsr[side].push(s.t, s.heel, s.met1, s.met5, s.ax, s.ay, s.az);
+  }
+
+  private onFsrMinute(m: FsrMinute) {
+    appendDaily(FSR_FILE, FSR_HEADER, fsrRow(m), m.minute).catch(() => {});
   }
 
   onEnvironment(t: number, e: EnvReading) {
@@ -178,6 +193,8 @@ export class HealthEngine {
 
   private async tick() {
     const now = Date.now();
+    this.fsr.R.closeIfStale(now);
+    this.fsr.L.closeIfStale(now);
     if (this.bottlePending.length) {
       const rows = this.bottlePending;
       this.bottlePending = [];
@@ -186,6 +203,7 @@ export class HealthEngine {
     if (localDate(now) !== this.date) {
       await this.compute(); // close the finished day with everything it got
       this.resetForDay(now);
+      await this.refreshBaselines(); // yesterday now counts toward your usual
     }
     if (now - this.lastCompute >= COMPUTE_EVERY_MS) await this.compute();
     await this.runRules(now);
@@ -217,7 +235,47 @@ export class HealthEngine {
       posture: { windowStart: open ? open[0] : null, pose: pose?.pose ?? null, poseOnset: pose ? (pose.utcMs as number) - 10000 : null },
       gaitWalksAlertedToday: this.gaitAlertedWalks.size,
       date: this.date,
+      baselines: this.baselines,
+      minBaselineDays: resolvePolicy().minBaselineDays,
+      place: this.placeNow(now),
+      sleepMeanHr: this.sleepMeanHr(heart, now),
     };
+  }
+
+  // No place model yet: a vehicle or walk toggle, or insole strides in the last 2 min (walking
+  // outside); otherwise indoors.
+  private placeNow(now: number): Place {
+    const ctx = contextAt(contextSpans(this.labels, now), now);
+    if (ctx === 'rickshaw' || ctx === 'metro_bus') return 'vehicle';
+    if (ctx === 'walk') return 'outdoor';
+    const recent = (xs: Stride[]) => xs.length > 0 && now - xs[xs.length - 1].hs_ms < 2 * MIN;
+    return recent(this.strides.R) || recent(this.strides.L) ? 'outdoor' : 'indoor';
+  }
+
+  // Last night's mean sleeping heart rate, once the band has reported a night that ended today.
+  private sleepMeanHr(heart: ReturnType<typeof buildHeartData>, now: number): number | null {
+    const sl = heart.sleep;
+    if (!sl || sl.end > now || sl.end < this.dayStart) return null;
+    const hrs = [...heart.hrByMinute].filter(([m]) => sl.segments.some(([a, b]) => m >= a && m < b)).map(([, v]) => v);
+    return hrs.length ? hrs.reduce((a, b) => a + b, 0) / hrs.length : null;
+  }
+
+  // Your usual: rebuilt from the last N days' files (not today) at start-up and after midnight.
+  async refreshBaselines(): Promise<Baselines> {
+    const policy = resolvePolicy();
+    const dates = (await this.listDays()).filter((d) => d < this.date).slice(0, policy.baselineWindowDays);
+    const days: PastDay[] = [];
+    for (const date of dates) days.push(await readPastDay(date));
+    const b = buildBaselines(days, resolveRule('GA-1').params.windowStrides);
+    this.baselines = b;
+    try {
+      if (!(await RNFS.exists(DAILY_DIR))) await RNFS.mkdir(DAILY_DIR);
+      await writeJsonAtomic(`${DAILY_DIR}/baselines.json`, b);
+    } catch (e) {
+      console.warn('Baselines write failed:', e);
+    }
+    useHealthStore.getState().setBaselines(b);
+    return b;
   }
 
   async runRules(now: number = Date.now()) {
@@ -227,7 +285,7 @@ export class HealthEngine {
       const rule = resolved[f.ruleId];
       const res = await deliverAlert({
         ruleId: f.ruleId, target: f.target, severity: f.severity ?? rule.severity, cooldownMin: rule.cooldownMin,
-        title: f.title, body: f.body, values: f.values, params: rule.params,
+        title: f.title, body: f.body, values: f.values, params: rule.params, onsetMs: f.onsetMs, dueMs: f.dueMs,
       }, now);
       if (res.reason === 'cooldown' || res.reason === 'snoozed') continue;
       if (f.ruleId === 'GA-1') this.gaitAlertedWalks.add(f.target);
@@ -270,8 +328,13 @@ export class HealthEngine {
       labels: this.labels,
       gps: [...this.gps.entries()],
       heart: buildHeartData(this.fitRows, this.dayStart, dayEnd),
-      settings: { tempOffsetC: analysis.tempOffsetC, leanForwardIsUpright: analysis.leanForwardIsUpright, targetMl: hydrationTargetMl() },
+      settings: {
+        tempOffsetC: analysis.tempOffsetC, leanForwardIsUpright: analysis.leanForwardIsUpright, targetMl: hydrationTargetMl(),
+        gaitLimits: resolveRule('GA-1').params, // the Today tab judges walks with the same limits as the alert
+      },
       previousDays,
+      baselines: this.baselines,
+      minBaselineDays: resolvePolicy().minBaselineDays,
     };
   }
 
@@ -327,13 +390,7 @@ export class HealthEngine {
       this.gatedMin = st.gatedMin ?? { R: 0, L: 0 };
       this.gaitAlertedWalks = new Set(st.gaitAlertedWalks ?? []);
     }
-    for (const side of ['R', 'L'] as const) {
-      this.strides[side] = (await readCsvRows(`${dir}/strides_${side}.csv`)).map((f) => {
-        const s = {} as Record<string, number>;
-        STRIDE_COLS.forEach((c, i) => { s[c] = f[i] === '' || f[i] === undefined ? NaN : Number(f[i]); });
-        return s as unknown as Stride;
-      });
-    }
+    for (const side of ['R', 'L'] as const) this.strides[side] = await readStrides(dir, side);
     this.bottle = (await readCsvRows(`${dir}/bottle.csv`)).map((f) => ({
       t: Number(f[0]), fused: Number(f[1]), weight: Number(f[2]), cap: f[3] === '' ? null : Number(f[3]),
     }));

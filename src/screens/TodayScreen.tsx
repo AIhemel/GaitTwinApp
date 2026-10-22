@@ -1,51 +1,28 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import RNFS from 'react-native-fs';
 import { useHealthStore } from '../store/HealthStore';
 import { healthEngine } from '../health/engine';
 import { DaySummary, WalkSummary, fmtDuration } from '../health/daySummary';
+import { AlertRow, DayFiles, readAlerts, readDayFiles } from '../health/history';
 import { EnvIntensityChart } from '../components/today/EnvIntensityChart';
-import { DAILY_DIR, localDate, parseCsvText } from '../services/DailyStore';
+import { Bar, Card, Chip, Kv, Segmented, hhmm, n0, ui } from '../components/today/ui';
+import { localDate } from '../services/DailyStore';
 import { AlertSettingsScreen } from './AlertSettingsScreen';
-import { AlertResponse, RESPONSE_LABELS, RESPONSES_FILE, recordResponse, snoozeRule } from '../health/notify';
+import { EvaluationScreen } from './EvaluationScreen';
+import { TimelineView } from './today/TimelineView';
+import { TrendsView } from './today/TrendsView';
+import { GaitDetailView } from './today/GaitDetailView';
+import { DataQualityView } from './today/DataQualityView';
+import { AlertResponse, RESPONSE_LABELS, recordResponse, snoozeRule } from '../health/notify';
 import { RULE_DEFS_BY_ID } from '../config/alertRules';
+import { resolvePolicy, resolveRule } from '../store/AlertRulesStore';
 
 // The health-twin daily view (handoff/mockups/daily_report.html): what the sensors saw today, in plain
 // sentences and a few numbers per domain. Values are computed on the phone by the health engine.
+// Other views of the picked day: Timeline, Gait detail, Trends (7/30 days to that day) and Data quality.
 
-type Chip = { label: string; tone: 'ok' | 'info' | 'warn' | 'alert' };
-const CHIP_COLORS: Record<Chip['tone'], [string, string]> = {
-  ok: ['#e6f4ea', '#1e7a3c'], info: ['#e8f0fb', '#2b5c9e'], warn: ['#fdf1e3', '#a05a10'], alert: ['#fde8e8', '#b3261e'],
-};
-
-const hhmm = (ms: number | null | undefined) => (ms === null || ms === undefined ? '—' : new Date(ms).toTimeString().slice(0, 5));
-const n0 = (x: number | null | undefined) => (x === null || x === undefined ? '—' : x.toFixed(0));
-
-const Card = ({ title, chip, children }: { title: string; chip?: Chip; children: React.ReactNode }) => (
-  <View style={styles.card}>
-    <View style={styles.cardHead}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      {chip && (
-        <View style={[styles.chip, { backgroundColor: CHIP_COLORS[chip.tone][0] }]}>
-          <Text style={[styles.chipText, { color: CHIP_COLORS[chip.tone][1] }]}>{chip.label}</Text>
-        </View>
-      )}
-    </View>
-    {children}
-  </View>
-);
-
-const Kv = ({ items }: { items: [string, string][] }) => (
-  <View style={styles.kv}>
-    {items.map(([v, k]) => (
-      <View key={k} style={styles.kvItem}><Text style={styles.kvVal}>{v}</Text><Text style={styles.kvKey}>{k}</Text></View>
-    ))}
-  </View>
-);
-
-const Bar = ({ frac, color }: { frac: number; color: string }) => (
-  <View style={styles.barBg}><View style={[styles.barFill, { width: `${Math.max(0, Math.min(1, frac)) * 100}%`, backgroundColor: color }]} /></View>
-);
+type View_ = 'day' | 'timeline' | 'gait' | 'trends' | 'data';
+const VIEWS: [View_, string][] = [['day', 'Day'], ['timeline', 'Timeline'], ['gait', 'Gait'], ['trends', 'Trends'], ['data', 'Data']];
 
 const WalkRow = ({ w }: { w: WalkSummary }) => {
   const feet = w.feet;
@@ -58,23 +35,12 @@ const WalkRow = ({ w }: { w: WalkSummary }) => {
         </Text>
       ) : null}
       <Text style={[styles.small, w.uneven.length ? styles.warnText : styles.okText]}>{w.feedback}</Text>
+      {w.vsUsual && <Text style={styles.small}>{w.vsUsual}</Text>}
     </View>
   );
 };
 
-interface AlertRow { id: string; t: number; rule: string; severity: string; delivered: boolean; reason: string; title: string; body: string; response: AlertResponse | null }
-
-const readCsv = async (path: string) => ((await RNFS.exists(path)) ? parseCsvText(await RNFS.readFile(path, 'utf8')).slice(1) : []);
-
-const readAlerts = async (date: string): Promise<AlertRow[]> => {
-  const responses = new Map<string, AlertResponse>();
-  for (const r of await readCsv(`${DAILY_DIR}/${date}/${RESPONSES_FILE}`)) if (r.length >= 3) responses.set(r[0], r[2] as AlertResponse);
-  const rows = (await readCsv(`${DAILY_DIR}/${date}/alerts.csv`)).filter((r) => r.length >= 9);
-  return rows.map((r) => ({
-    id: r[0], t: Number(r[1]), rule: r[2], severity: r[4], delivered: r[5] === '1', reason: r[6], title: r[7], body: r[8],
-    response: responses.get(r[0]) ?? null,
-  })).reverse();
-};
+const newestFirst = async (date: string) => (await readAlerts(date)).reverse();
 
 const AlertItem = ({ a, date }: { a: AlertRow; date: string }) => {
   const [paused, setPaused] = useState(false);
@@ -113,15 +79,24 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
   const hChip: Chip | undefined = h.totalMl === null ? undefined
     : h.totalMl >= h.targetMl ? { label: 'Goal reached', tone: 'ok' }
       : h.verdict.startsWith('On track') ? { label: 'On track', tone: 'info' } : { label: 'Below goal', tone: 'warn' };
+  // "your usual" (null until enough days are recorded; older summaries have no usual section)
+  const u = s.usual ?? null;
   const p = s.posture;
   const pChip: Chip | undefined = !p || p.uprightPct === null ? undefined
-    : p.uprightPct >= 60 ? { label: 'Mostly upright', tone: 'ok' } : { label: 'Often slouched or leaning', tone: 'warn' };
+    : u?.uprightPct !== null && u?.uprightPct !== undefined
+      ? (p.uprightPct < u.uprightPct - 15 ? { label: 'Less upright than usual', tone: 'warn' } : { label: 'Usual', tone: 'ok' })
+      : p.uprightPct >= 60 ? { label: 'Mostly upright', tone: 'ok' } : { label: 'Often slouched or leaning', tone: 'warn' };
   const g = s.gait;
   const gChip: Chip | undefined = !g.walks.length ? undefined
     : g.walks.some((w) => w.uneven.length) ? { label: 'Uneven steps seen', tone: 'warn' } : { label: 'Even steps', tone: 'ok' };
   const hr = s.heart;
+  const sleepDelta = hr.sleepMeanHr !== null && u?.sleepMeanHr ? hr.sleepMeanHr - u.sleepMeanHr : null;
   const hrChip: Chip | undefined = !hr.hrMinutes ? undefined
-    : hr.restingHighMin >= 10 || (hr.minSpo2 !== null && hr.minSpo2 < 90) ? { label: 'Check alerts', tone: 'alert' } : { label: 'No alerts', tone: 'ok' };
+    : hr.restingHighMin >= 10 || (hr.minSpo2 !== null && hr.minSpo2 < 90) ? { label: 'Check alerts', tone: 'alert' }
+      : sleepDelta !== null && sleepDelta > resolveRule('HR-5').params.deltaBpm ? { label: 'Above usual asleep', tone: 'warn' }
+        : u?.sleepMeanHr || u?.awakeMeanHr ? { label: 'Usual', tone: 'ok' } : { label: 'No alerts', tone: 'ok' };
+  const minDays = resolvePolicy().minBaselineDays;
+  const usualLine = (label: string, v: number | null | undefined, fmt: (x: number) => string) => (v === null || v === undefined ? null : `${label} ${fmt(v)}`);
   const cov = s.coverage;
   const coverage: [string, number][] = [
     ['Right insole', cov.gaitR], ['Left insole', cov.gaitL], ['Environment', cov.environment], ['Cushion', cov.posture],
@@ -130,7 +105,7 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
 
   return (
     <>
-      <View style={styles.card}>
+      <View style={ui.card}>
         <Text style={styles.cardTitle}>Sensors recorded</Text>
         <View style={styles.coverage}>
           {coverage.map(([name, min]) => (
@@ -138,6 +113,14 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
           ))}
         </View>
       </View>
+
+      {(!u || u.days < minDays) && (
+        <View style={ui.card}>
+          <Text style={styles.small}>
+            Learning your usual: {u?.days ?? 0} of {minDays} days recorded so far. After that, each card compares the day with your own usual range, and the personal alerts (sitting and sleeping heart rate, unusual air for a place) switch on.
+          </Text>
+        </View>
+      )}
 
       {s.insights.length > 0 && (
         <Card title="Insights">
@@ -147,10 +130,17 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
 
       <Card title="Environment" chip={envChip}>
         <EnvIntensityChart vars={env.vars} isToday={isToday} tempOffsetC={env.tempOffsetC} />
+        {(u?.pm25Indoor || u?.co2Indoor) ? (
+          <Text style={styles.small}>Your usual indoors: {[usualLine('PM2.5', u.pm25Indoor, (x) => `${x.toFixed(0)} µg/m³`), usualLine('CO₂', u.co2Indoor, (x) => `${x.toFixed(0)} ppm`)].filter(Boolean).join(' · ')}</Text>
+        ) : null}
       </Card>
 
       <Card title="Movement & gait" chip={gChip}>
-        <Kv items={[[String(g.stepsInsole), 'steps (insoles)'], [fmtDuration(g.walkingMin), 'walking'], [String(g.walks.length), 'walks']]} />
+        <Kv items={[
+          [String(g.stepsBand ?? g.stepsInsole), g.stepsBand !== null && g.stepsBand !== undefined ? 'steps (band)' : 'steps (insoles)'],
+          [fmtDuration(g.walkingMin), 'walking (insoles)'], [String(g.walks.length), 'walks'],
+        ]} />
+        {u?.steps ? <Text style={styles.small}>Your usual: {Math.round(u.steps).toLocaleString()} steps a day{u.cadence ? `, walking at ${u.cadence.toFixed(0)} steps/min` : ''}.</Text> : null}
         {g.walks.map((w) => <WalkRow key={w.start} w={w} />)}
         {!g.walks.length && <Text style={styles.small}>No walk of 20+ strides recorded by the insoles.</Text>}
         {(g.gatedMin.R > 0 || g.gatedMin.L > 0) && (
@@ -165,7 +155,7 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
           <>
             <Text style={styles.big}>{(h.totalMl / 1000).toFixed(2)} L <Text style={styles.unit}>of {(h.targetMl / 1000).toFixed(1)} L</Text></Text>
             <Bar frac={h.totalMl / h.targetMl} color="#2563eb" />
-            <Text style={styles.small}>{h.verdict}{h.longestGapMin !== null ? ` Longest gap: ${fmtDuration(h.longestGapMin)}.` : ''}</Text>
+            <Text style={styles.small}>{h.verdict}{h.longestGapMin !== null ? ` Longest gap: ${fmtDuration(h.longestGapMin)}.` : ''}{u?.waterMl ? ` Your usual: ${(u.waterMl / 1000).toFixed(2)} L a day.` : ''}</Text>
             {h.drinks.length > 0 && (
               <Text style={styles.small}>Drinks: {h.drinks.map((d) => `${hhmm(d.t)} ${d.ml !== null ? `${d.ml.toFixed(0)} mL` : '(tapped)'}`).join(' · ')}</Text>
             )}
@@ -189,6 +179,7 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
           <>
             <Kv items={[[fmtDuration(p.uprightMin), 'upright'], [fmtDuration(p.poorMin), 'slouched / leaning'], [fmtDuration(p.longestSitMin), 'longest sitting']]} />
             {p.uprightPct !== null && <Bar frac={p.uprightPct / 100} color="#1e7a3c" />}
+            {p.uprightPct !== null && u?.uprightPct ? <Text style={styles.small}>Upright {p.uprightPct.toFixed(0)} % of the time; your usual {u.uprightPct.toFixed(0)} %.</Text> : null}
             <Text style={styles.small}>
               {Object.entries(p.byPose).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ').toLowerCase()} ${fmtDuration(v)}`).join(' · ')}
             </Text>
@@ -199,7 +190,16 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
       <Card title="Heart" chip={hrChip}>
         {!hr.hrMinutes ? <Text style={styles.small}>No heart-rate data from the band yet.</Text> : (
           <>
-            <Kv items={[[n0(hr.awakeMeanHr), 'awake avg bpm'], [n0(hr.sleepMeanHr), 'sleeping avg bpm'], [`${n0(hr.maxHr)}`, `max bpm (${hhmm(hr.maxHrAt)})`]]} />
+            <Kv items={[
+              [n0(hr.awakeMeanHr), u?.awakeMeanHr ? `awake avg (usual ${u.awakeMeanHr.toFixed(0)})` : 'awake avg bpm'],
+              [n0(hr.sleepMeanHr), u?.sleepMeanHr ? `asleep avg (usual ${u.sleepMeanHr.toFixed(0)})` : 'sleeping avg bpm'],
+              [`${n0(hr.maxHr)}`, `max bpm (${hhmm(hr.maxHrAt)})`],
+            ]} />
+            {sleepDelta !== null && sleepDelta > resolveRule('HR-5').params.deltaBpm && (
+              <Text style={[styles.small, styles.warnText]}>
+                Sleeping heart rate {hr.sleepMeanHr?.toFixed(0)} bpm, {sleepDelta.toFixed(0)} above your usual. This is often seen with stress, illness, heat or alcohol.
+              </Text>
+            )}
             <Text style={styles.small}>
               {hr.restingHighMin ? `Above 120 bpm while not moving for ${fmtDuration(hr.restingHighMin)}. ` : 'No high heart rate at rest. '}
               {hr.minSpo2 !== null ? `Lowest SpO₂ ${hr.minSpo2.toFixed(0)} % at ${hhmm(hr.minSpo2At)} (${hr.spo2Readings} readings).` : 'No SpO₂ readings.'}
@@ -231,6 +231,27 @@ const SummaryView = ({ s, isToday, alerts, onSettings }: { s: DaySummary; isToda
   );
 };
 
+// Days imported from the thesis pipeline (scripts/import_thesis_days.py) carry only day totals: they
+// exist to teach the app your usual; the full analysis of those days is in the pipeline's reports.
+const ImportedDayView = ({ s }: { s: any }) => (
+  <Card title={`${s.date} · imported`} chip={{ label: 'Thesis day', tone: 'info' }}>
+    <Text style={styles.small}>
+      Imported from the {s.source ?? 'thesis pipeline'} so the app knows your usual from the start. The full
+      analysis of this day is in the pipeline's daily report.
+    </Text>
+    <Kv items={[
+      [s.gait?.stepsBand ? String(Math.round(s.gait.stepsBand)) : '—', 'band steps'],
+      [s.heart?.awakeMeanHr ? s.heart.awakeMeanHr.toFixed(0) : '—', 'awake avg bpm'],
+      [s.heart?.sleepMeanHr ? s.heart.sleepMeanHr.toFixed(0) : '—', 'asleep avg bpm'],
+    ]} />
+    <Kv items={[
+      [s.hydration?.totalMl !== null && s.hydration?.totalMl !== undefined ? `${(s.hydration.totalMl / 1000).toFixed(2)} L` : '—', 'water'],
+      [s.posture?.uprightPct !== null && s.posture?.uprightPct !== undefined ? `${s.posture.uprightPct.toFixed(0)} %` : '—', 'upright'],
+      [s.gait?.strides ? `${s.gait.strides.R} / ${s.gait.strides.L}` : '—', 'strides R / L'],
+    ]} />
+  </Card>
+);
+
 export const TodayScreen = () => {
   const today = useHealthStore((st) => st.today);
   const viewedDate = useHealthStore((st) => st.viewedDate);
@@ -239,6 +260,10 @@ export const TodayScreen = () => {
   const [busy, setBusy] = useState(false);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [evalOpen, setEvalOpen] = useState(false);
+  const [view, setView] = useState<View_>('day');
+  const [files, setFiles] = useState<DayFiles | null>(null);
+  const [version, setVersion] = useState(0); // bumped by pull-to-refresh: the other views re-read their files
   const alertsVersion = useHealthStore((st) => st.alertsVersion);
   const todayDate = localDate();
   const showing = viewedDate === null || viewedDate === todayDate ? today : viewed;
@@ -249,7 +274,8 @@ export const TodayScreen = () => {
     try {
       useHealthStore.getState().setDays(await healthEngine.listDays());
       if (viewedDate === null || viewedDate === todayDate) await healthEngine.compute();
-      setAlerts(await readAlerts(viewedDate ?? todayDate));
+      setAlerts(await newestFirst(viewedDate ?? todayDate));
+      setVersion((v) => v + 1);
     } catch (e) {
       console.warn('Today refresh failed:', e);
     } finally {
@@ -259,7 +285,17 @@ export const TodayScreen = () => {
 
   useEffect(() => { refresh(); }, [refresh]);
   // a new alert or an answer to one: re-read the list
-  useEffect(() => { readAlerts(viewedDate ?? todayDate).then(setAlerts).catch(() => {}); }, [alertsVersion, viewedDate, todayDate]);
+  useEffect(() => { newestFirst(viewedDate ?? todayDate).then(setAlerts).catch(() => {}); }, [alertsVersion, viewedDate, todayDate]);
+  // the Timeline, Gait and Data views read the picked day's files
+  useEffect(() => {
+    if (view === 'day' || view === 'trends') return;
+    let alive = true;
+    setFiles((f) => (f?.date === showingDate ? f : null));
+    readDayFiles(showingDate)
+      .then((f) => { if (alive) setFiles(f); })
+      .catch((e) => console.warn('Day files read failed:', e));
+    return () => { alive = false; };
+  }, [view, showingDate, version, alertsVersion]);
 
   const pick = async (date: string) => {
     if (date === todayDate) {
@@ -275,9 +311,13 @@ export const TodayScreen = () => {
   return (
     <ScrollView style={styles.scroll} refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} />}>
       <AlertSettingsScreen visible={settingsOpen} onClose={() => { setSettingsOpen(false); refresh(); }} />
+      <EvaluationScreen visible={evalOpen} onClose={() => setEvalOpen(false)} />
       <View style={styles.topRow}>
         <Text style={styles.topHint}>Pull down to refresh</Text>
-        <TouchableOpacity onPress={() => setSettingsOpen(true)}><Text style={styles.settingsLink}>⚙ Alerts & reminders</Text></TouchableOpacity>
+        <View style={styles.topLinks}>
+          <TouchableOpacity onPress={() => setEvalOpen(true)}><Text style={styles.settingsLink}>Evaluation</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => setSettingsOpen(true)}><Text style={[styles.settingsLink, styles.topLinkGap]}>⚙ Alerts & reminders</Text></TouchableOpacity>
+        </View>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.days}>
         {dayChoices.map((d) => (
@@ -286,11 +326,19 @@ export const TodayScreen = () => {
           </TouchableOpacity>
         ))}
       </ScrollView>
-      {showing ? <SummaryView s={showing} isToday={showingDate === todayDate} alerts={alerts} onSettings={() => setSettingsOpen(true)} /> : (
-        <View style={styles.empty}>
-          {busy ? <ActivityIndicator /> : <Text style={styles.small}>No analysis for this day yet.</Text>}
-        </View>
-      )}
+      <Segmented options={VIEWS} value={view} onChange={setView} />
+      {view === 'trends' ? <TrendsView endDate={showingDate} version={version} />
+        : view !== 'day' ? (
+          !files || files.date !== showingDate ? <View style={styles.empty}><ActivityIndicator /></View>
+            : view === 'timeline' ? <TimelineView files={files} isToday={showingDate === todayDate} />
+              : view === 'gait' ? <GaitDetailView files={files} />
+                : <DataQualityView files={files} isToday={showingDate === todayDate} />
+        )
+          : showing && (showing as any).imported ? <ImportedDayView s={showing} /> : showing ? <SummaryView s={showing} isToday={showingDate === todayDate} alerts={alerts} onSettings={() => setSettingsOpen(true)} /> : (
+            <View style={styles.empty}>
+              {busy ? <ActivityIndicator /> : <Text style={styles.small}>No analysis for this day yet.</Text>}
+            </View>
+          )}
     </ScrollView>
   );
 };
@@ -302,16 +350,8 @@ const styles = StyleSheet.create({
   dayChipOn: { backgroundColor: '#2196F3' },
   dayText: { fontSize: 13, fontWeight: '600', color: '#4a5568' },
   dayTextOn: { color: '#fff' },
-  card: { backgroundColor: '#fff', padding: 14, borderRadius: 12, marginBottom: 12, elevation: 1 },
-  cardHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   cardTitle: { fontSize: 15, fontWeight: 'bold', color: '#2d3748', marginBottom: 4 },
-  chip: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
-  chipText: { fontSize: 11, fontWeight: 'bold' },
   insight: { fontSize: 13, color: '#2d3748', marginBottom: 6, lineHeight: 18 },
-  kv: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  kvItem: { flex: 1, alignItems: 'center' },
-  kvVal: { fontSize: 17, fontWeight: 'bold', color: '#2b6cb0' },
-  kvKey: { fontSize: 10.5, color: '#a0aec0', textAlign: 'center' },
   small: { fontSize: 12, color: '#4a5568', marginTop: 4, lineHeight: 17 },
   warnText: { color: '#a05a10' },
   okText: { color: '#1e7a3c' },
@@ -319,8 +359,6 @@ const styles = StyleSheet.create({
   walkTitle: { fontSize: 13, fontWeight: '600', color: '#2d3748' },
   big: { fontSize: 22, fontWeight: 'bold', color: '#2563eb' },
   unit: { fontSize: 13, color: '#a0aec0', fontWeight: 'normal' },
-  barBg: { height: 8, backgroundColor: '#edf2f7', borderRadius: 4, overflow: 'hidden', marginTop: 6 },
-  barFill: { height: 8, borderRadius: 4 },
   history: { marginTop: 10 },
   histRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
   histDate: { width: 44, fontSize: 11, color: '#4a5568' },
@@ -342,4 +380,6 @@ const styles = StyleSheet.create({
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   topHint: { fontSize: 11, color: '#a0aec0' },
   settingsLink: { color: '#2196F3', fontWeight: 'bold', fontSize: 13 },
+  topLinks: { flexDirection: 'row' },
+  topLinkGap: { marginLeft: 16 },
 });

@@ -15,4 +15,13 @@ function readFixtureText(name) {
   return name.endsWith('.gz') ? zlib.gunzipSync(buf).toString('utf8') : buf.toString('utf8');
 }
 
-module.exports = { readFixtureText };
+/**
+ * Text of any file in the app repository (e.g. a script whose constants a test checks).
+ * @param {string} rel path relative to the repository root
+ * @returns {string}
+ */
+function readRepoText(rel) {
+  return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+}
+
+module.exports = { readFixtureText, readRepoText };

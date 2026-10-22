@@ -159,6 +159,30 @@ for w0, w1 in windows:
         end = inside.onset_ms.iloc[i + 1] if i + 1 < len(inside) else w1
         segs.append({"pose": r.pose_name, "start": max(r.onset_ms, w0), "end": end})
 write_json("posture_expected.json", {"windows": windows, "segments": segs})
+
+
+# ------------------------------------------------------------------ pressure-sensor health (sensor_health)
+# The pipeline's per-minute statistics and statuses, grouped by utc_ms minute (the app's clock; the pipeline
+# groups by local rx_ms minute) over each fixture foot sorted by utc_ms, as the app's accumulator sees it.
+FSR = ["Heel_FSR", "Met1_FSR", "Met5_FSR"]
+fsr_expected = {}
+for key, frame in (("hemel", hemel), ("spriha", spriha)):
+    for side in ("R", "L"):
+        d = frame[frame.side == side][GAIT_COLS].sort_values("utc_ms", kind="stable")
+        d = d.assign(t=(d.utc_ms // 60000) * 60000, acc=np.sqrt(d.Accel_X**2 + d.Accel_Y**2 + d.Accel_Z**2))
+        acc_sd = d.groupby("t").acc.std()
+        ref = float(d[FSR].quantile(0.95).max())
+        minutes = []
+        for t, g in d.groupby("t"):
+            row = {"minute": int(t), "samples": len(g), "acc_sd": float(acc_sd[t]), "moving": bool(acc_sd[t] > 2.0)}
+            for c in FSR:
+                k = c.replace("_FSR", "").lower()
+                p95, zero = float(g[c].quantile(0.95)), float((g[c] == 0).mean())
+                row[k] = {"p95": p95, "zero": zero, "sat": float((g[c] >= 4095).mean()),
+                          "status": "dropout" if p95 < 2 else "low range" if p95 < 0.1 * ref else "dropout" if zero > 0.5 else "ok"}
+            minutes.append(row)
+        fsr_expected[f"{key}_{side}"] = {"ref_pipeline": ref, "minutes": minutes}
+write_json("fsr_expected.json", fsr_expected)
 print("fixtures written to", OUT)
 for k, v in gait_expected.items():
     print(f"  {k}: rate {v['info']['rate_hz']:.1f} Hz, gated={v['info']['gated']}, strides={len(v['strides'])}")

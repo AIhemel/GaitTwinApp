@@ -35,6 +35,12 @@ export interface Stride {
   bout: number;
 }
 
+// Column order of the per-day strides_R.csv / strides_L.csv files.
+export const STRIDE_COLS: (keyof Stride)[] = [
+  'hs_ms', 'stride_s', 'stance_pct', 'stance_s', 'swing_s', 'stance_imu_pct', 'stance_imu_s', 'swing_imu_s', 'pushoff_pct',
+  'tilt_range_deg', 'pitch_range_deg', 'peak_acc_ms2', 'heel_share', 'met1_share', 'met5_share', 'hs_imu_ms', 'to_imu_ms', 'to_fsr_ms', 'bout',
+];
+
 export const emptySeries = (): GaitSeries => ({
   t: [], pitch: [], qI: [], qJ: [], qK: [], qR: [], heel: [], met1: [], met5: [], ax: [], ay: [], az: [],
 });

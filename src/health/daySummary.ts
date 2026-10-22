@@ -4,6 +4,7 @@ import { PoseEvent, POOR_POSES, UPRIGHT_POSES, postureSegments } from './posture
 import { ENV_BANDS, ENV_VARS, EnvVar, POLLUTED_PM25, bandIndex } from './environment';
 import { HeartData } from './heart';
 import { contextAt as spanAt, contextSpans, insoleStepsPerMinute, isCadenceLocked, isInactive } from './context';
+import { Baselines, sleepingHrBaseline, usable } from './baselines';
 
 // Everything the Today tab shows for one day, computed from that day's inputs. Pure: the engine
 // (engine.ts) collects the inputs and stores the result; tests feed inputs directly.
@@ -26,8 +27,20 @@ export interface DayInputs {
   labels: { t: number; label: string; note: string }[];
   gps: [number, [number, number]][];
   heart: HeartData;
-  settings: { tempOffsetC: number; leanForwardIsUpright: boolean; targetMl: number };
+  settings: {
+    tempOffsetC: number; leanForwardIsUpright: boolean; targetMl: number;
+    gaitLimits?: Record<string, number>; // the uneven-steps rule's limits (floorStance ..., madK), as edited
+  };
   previousDays: { date: string; waterMl: number | null }[];
+  baselines?: Baselines | null; // your usual, from past days
+  minBaselineDays?: number;
+}
+
+export interface Usual {
+  days: number; // days your usual is learned from
+  steps: number | null; awakeMeanHr: number | null; sleepMeanHr: number | null; sittingHr: number | null;
+  uprightPct: number | null; waterMl: number | null; cadence: number | null;
+  stanceR: number | null; stanceL: number | null; pm25Indoor: number | null; co2Indoor: number | null;
 }
 
 export interface EnvVarSummary {
@@ -41,13 +54,15 @@ export interface WalkSummary {
   si: Record<string, number | null>; // symmetry index, % (R vs L)
   uneven: string[]; // measures beyond the absolute floor
   feedback: string;
+  vsUsual: string | null; // cadence and stance compared with your usual walks
 }
 
 export interface DaySummary {
   date: string; generatedAt: number;
   coverage: Record<'gaitR' | 'gaitL' | 'environment' | 'posture' | 'bottle' | 'heartRate' | 'gps', number>;
   environment: { vars: Record<EnvVar, EnvVarSummary>; pollutedMin: number; tempOffsetC: number; warmupMin: number };
-  gait: { stepsInsole: number; walkingMin: number; strides: { R: number; L: number }; gatedMin: { R: number; L: number }; walks: WalkSummary[] };
+  usual: Usual | null;
+  gait: { stepsInsole: number; stepsBand: number | null; walkingMin: number; strides: { R: number; L: number }; gatedMin: { R: number; L: number }; walks: WalkSummary[] };
   hydration: { totalMl: number | null; drinks: { t: number; ml: number | null; source: 'bottle' | 'tap' }[]; longestGapMin: number | null; targetMl: number; pacePct: number | null; history: { date: string; waterMl: number | null }[]; verdict: string };
   posture: { monitoredMin: number; byPose: Record<string, number>; uprightMin: number; poorMin: number; longestSitMin: number; uprightPct: number | null } | null;
   heart: { awakeMeanHr: number | null; maxHr: number | null; maxHrAt: number | null; restingHighMin: number; sleepMeanHr: number | null; minSpo2: number | null; minSpo2At: number | null; spo2Readings: number; hrMinutes: number; cadenceLockMin: number };
@@ -57,10 +72,12 @@ export interface DaySummary {
 
 export const MINUTE_HEADER = 'minute,hr,steps_band,steps_insole,stride_time_s,stance_pct,co2_ppm,temp_c,rh_pct,pm25,pm10,dba,gps_speed_mps,posture,sleep_stage,water_ml,hr_cadence_lock,event,context';
 
-// Symmetry index floors (thresholds.json gait_asymmetry.metrics.*.abs_floor_pct)
+// Symmetry index floors (thresholds.json gait_asymmetry.metrics.*.abs_floor_pct); the user's edits to the
+// uneven-steps rule (GA-1) replace these, so the Today tab and the alert agree.
 export const SI_FLOORS: Record<string, number> = { stanceImuPct: 5, swingImuS: 10, pushoffPct: 5, tiltRangeDeg: 15, strideS: 3 };
-const SI_NAMES: Record<string, string> = { stanceImuPct: 'stance (time on the ground)', swingImuS: 'swing time', pushoffPct: 'push-off timing', tiltRangeDeg: 'foot tilt range', strideS: 'stride time' };
-const SI_FMT: Record<string, (v: number) => string> = {
+export const SI_PARAM: Record<string, string> = { stanceImuPct: 'floorStance', swingImuS: 'floorSwing', pushoffPct: 'floorPushoff', tiltRangeDeg: 'floorTilt', strideS: 'floorStride' };
+export const SI_NAMES: Record<string, string> = { stanceImuPct: 'stance (time on the ground)', swingImuS: 'swing time', pushoffPct: 'push-off timing', tiltRangeDeg: 'foot tilt range', strideS: 'stride time' };
+export const SI_FMT: Record<string, (v: number) => string> = {
   stanceImuPct: (v) => `${v.toFixed(1)} % of the stride`, swingImuS: (v) => `${v.toFixed(2)} s`,
   pushoffPct: (v) => `${v.toFixed(1)} % of the stride`, tiltRangeDeg: (v) => `${v.toFixed(0)}°`, strideS: (v) => `${v.toFixed(2)} s`,
 };
@@ -126,7 +143,9 @@ const summariseEnv = (inp: DayInputs) => {
   };
 };
 
-const footStats = (strides: Stride[]) => {
+// Per-foot medians over steady strides (null under 10 steady strides).
+export type FootStats = { strides: number; stanceImuPct: number; swingImuS: number; pushoffPct: number | null; tiltRangeDeg: number; strideS: number };
+export const footStats = (strides: Stride[]): FootStats | null => {
   const s = steady(strides);
   if (s.length < 10) return null;
   return {
@@ -139,8 +158,30 @@ const footStats = (strides: Stride[]) => {
   };
 };
 
+// Bouts restart where a foot detected nothing for > 2.5 s (strides come from separate live windows).
+export const rebout = (xs: Stride[]): Stride[] => xs.map((s) => ({ ...s, bout: 0 })).map((s, i, arr) => {
+  if (i > 0) s.bout = arr[i - 1].bout + ((s.hs_ms - arr[i - 1].hs_ms) / 1000 > 2.5 ? 1 : 0);
+  return s;
+});
+
+// How walks are judged: your usual (when learned) and the uneven-steps rule's limits.
+export interface WalkOpts { baselines?: Baselines | null; minBaselineDays?: number; gaitLimits?: Record<string, number> }
+
+// Centre and half-width of the "even" range of one symmetry measure: your usual when learned, else 0 ± floor.
+export const siRange = (k: string, opts: WalkOpts) => {
+  const limits = opts.gaitLimits ?? {};
+  const floor = limits[SI_PARAM[k]] ?? SI_FLOORS[k];
+  const st = opts.baselines?.gaitSi[SI_PARAM[k]];
+  return usable(st, opts.minBaselineDays ?? 3)
+    ? { centre: st.median, limit: Math.max(floor, (limits.madK ?? 4) * st.mad), personal: true }
+    : { centre: 0, limit: floor, personal: false };
+};
+
 // Walks: strides of either foot, split where nothing was detected for > 60 s; at least 20 strides.
-const summariseWalks = (R: Stride[], L: Stride[]): WalkSummary[] => {
+export const summariseWalks = (R: Stride[], L: Stride[], opts: WalkOpts): WalkSummary[] => {
+  const minDays = opts.minBaselineDays ?? 3;
+  const usual = opts.baselines ?? null;
+  const range = (k: string) => siRange(k, opts);
   const all = [...R.map((s) => ({ s, f: 'R' as const })), ...L.map((s) => ({ s, f: 'L' as const }))].sort((a, b) => a.s.hs_ms - b.s.hs_ms);
   const groups: typeof all[] = [];
   for (const x of all) {
@@ -148,11 +189,7 @@ const summariseWalks = (R: Stride[], L: Stride[]): WalkSummary[] => {
     if (g && x.s.hs_ms - g[g.length - 1].s.hs_ms <= 60000) g.push(x); else groups.push([x]);
   }
   return groups.filter((g) => g.length >= 20).map((g) => {
-    // per-foot bouts are renumbered inside the walk (strides come from separate live windows)
-    const rebout = (xs: Stride[]) => xs.map((s) => ({ ...s, bout: 0 })).map((s, i, arr) => {
-      if (i > 0) s.bout = arr[i - 1].bout + ((s.hs_ms - arr[i - 1].hs_ms) / 1000 > 2.5 ? 1 : 0);
-      return s;
-    });
+    // per-foot bouts are renumbered inside the walk
     const r = rebout(g.filter((x) => x.f === 'R').map((x) => x.s));
     const l = rebout(g.filter((x) => x.f === 'L').map((x) => x.s));
     const feet = { R: footStats(r), L: footStats(l) };
@@ -162,7 +199,8 @@ const summariseWalks = (R: Stride[], L: Stride[]): WalkSummary[] => {
     for (const k of Object.keys(SI_FLOORS)) {
       const v = feet.R && feet.L ? si((feet.R as any)[k], (feet.L as any)[k]) : null;
       sis[k] = v;
-      if (v !== null && Math.abs(v) > SI_FLOORS[k]) uneven.push(k);
+      const rg = range(k);
+      if (v !== null && Math.abs(v - rg.centre) > rg.limit) uneven.push(k);
     }
     const steps = 2 * Math.max(r.length, l.length);
     let feedback: string;
@@ -170,16 +208,26 @@ const summariseWalks = (R: Stride[], L: Stride[]): WalkSummary[] => {
       const missing = !feet.R && !feet.L ? 'either insole' : !feet.R ? 'the right insole' : 'the left insole';
       feedback = `Not enough steady walking from ${missing} for a left/right comparison.`;
     } else if (uneven.length) {
-      const k = uneven.sort((a, b) => Math.abs(sis[b] as number) / SI_FLOORS[b] - Math.abs(sis[a] as number) / SI_FLOORS[a])[0];
+      const excess = (k: string) => Math.abs((sis[k] as number) - range(k).centre) / range(k).limit;
+      const k = uneven.sort((x, y) => excess(y) - excess(x))[0];
       const v = sis[k] as number;
       const fmt = SI_FMT[k];
-      feedback = `Uneven ${SI_NAMES[k]}: right ${fmt((feet.R as any)[k])}, left ${fmt((feet.L as any)[k])} — ${Math.abs(v).toFixed(0)} % apart (alert threshold ±${SI_FLOORS[k]} %).`;
+      const rg = range(k);
+      feedback = `Uneven ${SI_NAMES[k]}: right ${fmt((feet.R as any)[k])}, left ${fmt((feet.L as any)[k])} — ${v >= 0 ? '+' : ''}${v.toFixed(0)} % (${rg.personal ? `your usual ${rg.centre >= 0 ? '+' : ''}${rg.centre.toFixed(1)} % ± ${rg.limit.toFixed(1)} %` : `limit ±${rg.limit} %`}).`;
     } else {
       feedback = `Left and right were even (stance ${feet.R.stanceImuPct.toFixed(0)} % vs ${feet.L.stanceImuPct.toFixed(0)} % of the stride).`;
     }
+    // your usual walk: cadence and each foot's stance (the "stance to cadence" picture over days)
+    const cadence = strideS ? 120 / strideS : null;
+    const gw = usual?.gaitWalk;
+    const parts: string[] = [];
+    if (cadence !== null && usable(gw?.cadence, minDays)) parts.push(`cadence ${cadence.toFixed(0)} vs ${gw.cadence.median.toFixed(0)} steps/min`);
+    if (feet.R && usable(gw?.stanceR, minDays)) parts.push(`right stance ${feet.R.stanceImuPct.toFixed(1)} vs ${gw.stanceR.median.toFixed(1)} %`);
+    if (feet.L && usable(gw?.stanceL, minDays)) parts.push(`left stance ${feet.L.stanceImuPct.toFixed(1)} vs ${gw.stanceL.median.toFixed(1)} %`);
     return {
       start: g[0].s.hs_ms, end: g[g.length - 1].s.hs_ms + 1000 * g[g.length - 1].s.stride_s,
-      steps, strideS, cadence: strideS ? 120 / strideS : null, feet, si: sis, uneven, feedback,
+      steps, strideS, cadence, feet, si: sis, uneven, feedback,
+      vsUsual: parts.length ? `Compared with your usual walks: ${parts.join(', ')}.` : null,
     };
   });
 };
@@ -263,7 +311,7 @@ export const computeDay = (inp: DayInputs): { summary: DaySummary; minuteRows: s
   const minSpo2 = spo2.length ? spo2.reduce((a, b) => (b.v < a.v ? b : a)) : null;
 
   const env = summariseEnv(inp);
-  const walks = summariseWalks(inp.strides.R, inp.strides.L);
+  const walks = summariseWalks(inp.strides.R, inp.strides.L, { baselines: inp.baselines, minBaselineDays: inp.minBaselineDays, gaitLimits: inp.settings.gaitLimits });
   const hydration = summariseHydration(inp, wakeAt);
   const posture = summarisePosture(inp);
 
@@ -334,10 +382,24 @@ export const computeDay = (inp: DayInputs): { summary: DaySummary; minuteRows: s
   if (minSpo2 && minSpo2.v < 95) insights.push(`Lowest SpO₂ reading: ${minSpo2.v.toFixed(0)} % at ${hhmm(minSpo2.t)}.`);
 
   const allStrides = [...inp.strides.R, ...inp.strides.L];
+  const b = inp.baselines ?? null;
+  const md = inp.minBaselineDays ?? 3;
+  const u = (st: { median: number; days: number } | null | undefined) => (usable(st as any, md) ? (st as any).median as number : null);
+  const sleepUsual = sleepingHrBaseline(b, 7);
+  const usual: Usual | null = b ? {
+    days: b.days.length,
+    steps: u(b.daily.steps), awakeMeanHr: u(b.daily.awakeMeanHr),
+    sleepMeanHr: sleepUsual && sleepUsual.nights >= md ? sleepUsual.median : null,
+    sittingHr: u(b.sittingHr), uprightPct: u(b.daily.uprightPct), waterMl: u(b.daily.waterMl),
+    cadence: u(b.gaitWalk.cadence), stanceR: u(b.gaitWalk.stanceR), stanceL: u(b.gaitWalk.stanceL),
+    pm25Indoor: u(b.envByPlace.indoor?.pm25), co2Indoor: u(b.envByPlace.indoor?.co2),
+  } : null;
+  const bandSteps = [...heart.stepsByMinute.values()].reduce((a, v) => a + v, 0);
   return {
     summary: {
-      date: inp.date, generatedAt: inp.now, coverage, environment: env,
+      date: inp.date, generatedAt: inp.now, coverage, environment: env, usual,
       gait: {
+        stepsBand: heart.stepsByMinute.size ? bandSteps : null,
         stepsInsole: [...new Set([...stridesPerMin.R.keys(), ...stridesPerMin.L.keys()])].reduce((a, m) => a + (stepsInsole(m) ?? 0), 0),
         walkingMin: allStrides.length ? new Set(allStrides.map((s) => s.hs_ms - (s.hs_ms % MIN))).size : 0,
         strides: { R: inp.strides.R.length, L: inp.strides.L.length }, gatedMin: inp.gaitGatedMin, walks,

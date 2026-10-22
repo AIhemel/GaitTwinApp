@@ -8,6 +8,7 @@ import { startLocationTracking, stopLocationTracking } from './LocationService';
 import { NODES, NODE_LIST, NODES_BY_ID, NodeConfig } from '../config/NodeRegistry';
 import { ClockSync } from './ClockSync';
 import { StreamMonitor } from './StreamMonitor';
+import { CONNECTION_EVENTS, logConnection, logStreamStats } from './DailyLogs';
 import { sessionWriter, cell, STREAM_HEADERS } from './SessionWriter';
 import { META_FILE, recoverUnfinishedSessions, uuidV4, writeJsonAtomic, writeManifest } from './SessionMeta';
 import { logActiveContextAtSessionStart, loadActiveContext } from './Labels';
@@ -81,11 +82,30 @@ const countPacket = (nodeId: string, rxMs: number, t: number | null = null, dela
 // --- events.csv: connects, disconnects, reboots, posture syncs — so a stretch with no data reads as
 // "node was away/asleep", not as a silent hole.
 // detail is ';'-separated key=value; commas would break the CSV row, so they're replaced.
+// Connection events also go to the day's connections.csv (recording or not) for the Data tab.
 const logEvent = (node: string, event: string, deviceMs?: number | null, utcMs?: number | null, detail = '') => {
-  sessionWriter.append('events', `${Date.now()},${node},${event},${cell(deviceMs)},${cell(utcMs)},${detail.replace(/[,\r\n]+/g, ' ')}`);
+  const now = Date.now();
+  const d = detail.replace(/[,\r\n]+/g, ' ');
+  sessionWriter.append('events', `${now},${node},${event},${cell(deviceMs)},${cell(utcMs)},${d}`);
+  if (CONNECTION_EVENTS.has(event)) logConnection(now, node, event, d).catch(() => {});
 };
 
 const sleep = (time: number) => new Promise<void>((resolve) => setTimeout(() => resolve(), time));
+
+// The health engine is analysis only. Recording comes first: rows are written before the engine is
+// fed, and an error in the analysis is caught here, so it can never cost a CSV row, a packet handler
+// or a connection. Each kind of failure is reported once (console + events.csv), not per packet.
+const analysisFailed = new Set<string>();
+const analyse = (what: string, fn: () => void) => {
+  try {
+    fn();
+  } catch (e) {
+    if (analysisFailed.has(what)) return;
+    analysisFailed.add(what);
+    console.warn(`Health engine (${what}) failed:`, e);
+    logEvent('APP', 'analysis_error', null, null, `input=${what};error=${String((e as Error)?.message ?? e)}`);
+  }
+};
 
 // ==========================================
 // GAIT — both feet, ~100 packets/s each (the firmware notifies once per BNO080 report: rotation
@@ -113,16 +133,16 @@ const onGaitPacket = (nodeId: GaitNodeId, value: string) => {
   chartDirty.add(nodeId);
   countPacket(nodeId, rxMs, p.deviceMs, utcMs === null ? null : rxMs - utcMs);
 
-  // On-phone stride analysis (health engine) runs on the synced clock, recording or not.
-  if (utcMs !== null) {
-    healthEngine.onGait(nodeId === 'GAIT' ? 'R' : 'L', {
-      t: utcMs, pitch: p.pitch, qI: p.qI, qJ: p.qJ, qK: p.qK, qR: p.qR,
-      heel: p.heel, met1: p.mid, met5: p.toe, ax: p.accX, ay: p.accY, az: p.accZ,
-    });
-  }
-
   if (sessionWriter.isOpen) {
     sessionWriter.append('gait', `${GAIT_SIDE[nodeId]},${rxMs},${p.deviceMs},${cell(utcMs)},${p.pitch.toFixed(3)},${p.roll.toFixed(3)},${p.qI.toFixed(6)},${p.qJ.toFixed(6)},${p.qK.toFixed(6)},${p.qR.toFixed(6)},${p.yaw.toFixed(3)},${p.heel},${p.mid},${p.toe},${p.accX.toFixed(4)},${p.accY.toFixed(4)},${p.accZ.toFixed(4)}`);
+  }
+
+  // On-phone stride analysis (health engine) runs on the synced clock, recording or not.
+  if (utcMs !== null) {
+    analyse('gait', () => healthEngine.onGait(nodeId === 'GAIT' ? 'R' : 'L', {
+      t: utcMs, pitch: p.pitch, qI: p.qI, qJ: p.qJ, qK: p.qK, qR: p.qR,
+      heel: p.heel, met1: p.mid, met5: p.toe, ax: p.accX, ay: p.accY, az: p.accZ,
+    }));
   }
 };
 
@@ -169,7 +189,6 @@ const onHydrationPacket = (value: string) => {
     lastDeviceMs.HYDRATION = p.deviceMs;
     utcMs = clock.toUtc(p.deviceMs);
     latestHydration = reading;
-    healthEngine.onBottle(utcMs ?? rxMs, p.fusedVolumeML, p.weightGrams, p.capVolumeML);
     uiDirty.add('HYDRATION');
     chartDirty.add('HYDRATION'); // offline samples aren't charted: they'd be out of order
   }
@@ -177,6 +196,7 @@ const onHydrationPacket = (value: string) => {
   countPacket('HYDRATION', rxMs, offline ? null : p.deviceMs, offline || utcMs === null ? null : rxMs - utcMs);
 
   sessionWriter.append('hydration', `${rxMs},${p.deviceMs},${cell(utcMs)},${offline ? 1 : 0},${p.weightGrams.toFixed(2)},${p.capVolumeML.toFixed(2)},${p.fusedVolumeML.toFixed(2)}`);
+  if (!offline) analyse('bottle', () => healthEngine.onBottle(utcMs ?? rxMs, p.fusedVolumeML, p.weightGrams, p.capVolumeML));
 
   // 500 ms without packets ends a burst; the UI then shows the last replayed value until the
   // next live packet.
@@ -203,9 +223,9 @@ const onEnvironmentPacket = (value: string) => {
   const e = decodeEnvironment(Buffer.from(value, 'base64'));
   if (!e) return;
   countPacket('ENVIRONMENT', rxMs, rxMs); // no node clock: arrival times are 10 s apart when nothing is lost
-  healthEngine.onEnvironment(rxMs, e);
 
   sessionWriter.append('environment', `${rxMs},${cell(e.deviceUtcS)},${rxMs},${cell(e.co2, 1)},${cell(e.temperature, 2)},${cell(e.humidity, 2)},${e.pm1},${e.pm25},${e.pm10},${cell(e.dba, 1)},${cell(e.latitude, 6)},${cell(e.longitude, 6)}`);
+  analyse('environment', () => healthEngine.onEnvironment(rxMs, e));
   useSensorStore.getState().updateEnvironment({
     co2: e.co2, temp: e.temperature, humidity: e.humidity, pm1: e.pm1, pm25: e.pm25, pm10: e.pm10, dba: e.dba,
     latitude: e.latitude, longitude: e.longitude, gpsClock: e.deviceUtcS !== null, receivedAt: rxMs,
@@ -240,7 +260,7 @@ const onPosturePacket = (value: string) => {
 
   sessionWriter.append('posture', `${rxMs},${cell(p.deviceUtcS)},${cell(utcMs)},${source},${replayed ? 1 : 0},${p.pose},${poseName(p.pose)}`);
   useSensorStore.getState().updatePosture({ pose: p.pose, eventUtcMs: utcMs, replayed });
-  healthEngine.onPosture(utcMs, poseName(p.pose), replayed);
+  analyse('posture', () => healthEngine.onPosture(utcMs, poseName(p.pose), replayed));
 };
 
 const writeToNode = (deviceId: string, node: NodeConfig, base64: string) => {
@@ -308,7 +328,7 @@ const handleNodeDisconnected = (node: NodeConfig, deviceId: string, status?: Nod
   lastDisconnectTime[node.id] = Date.now();
   monitors[node.id].connectedSince = null;
   monitors[node.id].resetChain();
-  healthEngine.onConnection(node.id, false, Date.now());
+  analyse('connection', () => healthEngine.onConnection(node.id, false, Date.now()));
   // A monitor error doesn't always mean the link is down; without this the node could sit in
   // "reconnecting" while still connected, and every reconnect attempt would fail.
   manager.cancelDeviceConnection(deviceId).catch(() => {});
@@ -373,7 +393,7 @@ const connectNode = (node: NodeConfig, device: Device) => {
       connectFailures[node.id] = 0;
       monitors[node.id].resetChain();
       monitors[node.id].connectedSince = Date.now();
-      healthEngine.onConnection(node.id, true, Date.now());
+      analyse('connection', () => healthEngine.onConnection(node.id, true, Date.now()));
       if (node.id === 'HYDRATION') lastLiveHydrationDeviceMs = null;
       if (node.id === 'GAIT' || node.id === 'GAIT_LEFT') {
         // Shorter connection interval: more airtime for ~100 packets/s and less per-packet
@@ -582,9 +602,18 @@ const runDataQualityCheck = async () => {
   for (const f of evaluateDataQuality(nodes, session.startedAt, now, rule.params)) {
     const res = await deliverAlert({
       ruleId: 'DQ-1', target: `${f.target}:${f.problem}`, severity: rule.severity, cooldownMin: rule.cooldownMin,
-      title: f.title, body: f.body, values: f.values, params: rule.params,
+      title: f.title, body: f.body, values: f.values, params: rule.params, onsetMs: f.onsetMs, dueMs: f.dueMs,
     }, now);
     if (res.reason !== 'cooldown') logEvent(f.target, `dq_${f.problem}`, null, null, `alert_id=${res.id};delivered=${res.delivered ? 1 : 0}`);
+  }
+};
+
+// The day's stream_stats.csv: one row per connected node per minute, recording or not.
+const logDailyStreamStats = () => {
+  const now = Date.now();
+  for (const node of NODE_LIST) {
+    if (!connectedDeviceIds[node.id]) continue;
+    logStreamStats(now, node.id, monitors[node.id].window(60), monitors[node.id].rssi).catch(() => {});
   }
 };
 
@@ -592,6 +621,7 @@ const startPeriodicTasks = () => {
   if (!minuteTimer) {
     minuteTimer = setInterval(() => {
       Promise.all(Object.keys(connectedDeviceIds).map(readRssi)).then(() => {
+        logDailyStreamStats();
         if (!sessionWriter.isOpen) return;
         logStreamRows();
         if (session) writeSessionMeta(session).catch(() => {});

@@ -1,5 +1,6 @@
 module.exports = {
   DownloadDirectoryPath: '/mock/Downloads',
+  ExternalDirectoryPath: '/mock/External',
   exists: jest.fn(() => Promise.resolve(false)),
   mkdir: jest.fn(() => Promise.resolve()),
   appendFile: jest.fn(() => Promise.resolve()),
